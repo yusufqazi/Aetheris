@@ -1,0 +1,185 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg: #eff4fb;
+  --panel: rgba(255, 255, 255, 0.78);
+  --panel-strong: rgba(255, 255, 255, 0.94);
+  --panel-muted: rgba(232, 239, 249, 0.88);
+  --nav-shell: rgba(255, 255, 255, 0.78);
+  --border: rgba(15, 23, 42, 0.1);
+  --border-strong: rgba(15, 23, 42, 0.18);
+  --accent-border: rgba(29, 78, 216, 0.28);
+  --text-primary: #020617;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --accent: #1e3a8a;
+  --accent-strong: #1d4ed8;
+  --accent-bright: #1d4ed8;
+  --accent-deep: #0f172a;
+  --accent-soft: rgba(29, 78, 216, 0.08);
+  --navy: #0f172a;
+  --danger: #9f2d2d;
+  --warning: #9a6700;
+  --shadow-hero: 0 30px 120px rgba(15, 23, 42, 0.16);
+  --shadow-lg: 0 18px 60px rgba(15, 23, 42, 0.14);
+  --shadow-md: 0 14px 40px rgba(15, 23, 42, 0.1);
+  --shadow-sm: 0 10px 24px rgba(15, 23, 42, 0.06);
+  --shadow-glow: 0 10px 30px rgba(29, 78, 216, 0.32);
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text-primary);
+  --font-sans: var(--font-manrope);
+  --font-mono: var(--font-plex-mono);
+}
+
+html.dark {
+  --bg: #07111f;
+  --panel: rgba(15, 23, 42, 0.72);
+  --panel-strong: rgba(19, 34, 56, 0.92);
+  --panel-muted: rgba(19, 34, 56, 0.76);
+  --nav-shell: rgba(7, 17, 31, 0.74);
+  --border: rgba(148, 163, 184, 0.14);
+  --border-strong: rgba(148, 163, 184, 0.22);
+  --accent-border: rgba(96, 165, 250, 0.32);
+  --text-primary: #e5edf8;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --accent: #1d4ed8;
+  --accent-strong: #2563eb;
+  --accent-bright: #60a5fa;
+  --accent-deep: #dbeafe;
+  --accent-soft: rgba(96, 165, 250, 0.12);
+  --navy: #0f172a;
+  --shadow-hero: 0 36px 120px rgba(2, 6, 23, 0.6);
+  --shadow-lg: 0 24px 80px rgba(2, 6, 23, 0.42);
+  --shadow-md: 0 18px 48px rgba(2, 6, 23, 0.32);
+  --shadow-sm: 0 10px 28px rgba(2, 6, 23, 0.2);
+  --shadow-glow: 0 14px 38px rgba(37, 99, 235, 0.34);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  background: var(--bg);
+}
+
+body {
+  background:
+    radial-gradient(circle at top left, rgba(96, 165, 250, 0.12), transparent 24%),
+    radial-gradient(circle at top right, rgba(29, 78, 216, 0.18), transparent 26%),
+    linear-gradient(180deg, var(--bg) 0%, color-mix(in srgb, var(--bg) 92%, black 8%) 100%);
+  color: var(--text-primary);
+  font-family: var(--font-manrope), sans-serif;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(96, 165, 250, 0.22);
+}
+
+.glass-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(18px);
+}
+
+.section-shell {
+  width: min(1280px, calc(100vw - 2rem));
+  margin: 0 auto;
+}
+
+.grid-pattern {
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.headline-glow {
+  text-shadow: 0 14px 40px rgba(96, 165, 250, 0.08);
+}
+
+.headline-display {
+  text-wrap: balance;
+}
+
+.hero-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.06) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: linear-gradient(180deg, rgba(255, 255, 255, 0.6), transparent 78%);
+  pointer-events: none;
+}
+
+.section-label {
+  font-family: var(--font-plex-mono), monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--accent-bright);
+}
+
+.section-title {
+  font-size: clamp(2rem, 3.7vw, 3.2rem);
+  line-height: 1.04;
+  letter-spacing: -0.04em;
+  color: var(--text-primary);
+}
+
+.section-copy {
+  max-width: 42rem;
+  font-size: 0.98rem;
+  line-height: 1.75;
+  color: var(--text-secondary);
+}
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(80, 97, 118, 0.5) transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(80, 97, 118, 0.45);
+  border-radius: 999px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
