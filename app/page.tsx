@@ -1,5 +1,14 @@
 import Link from "next/link";
-import { Beaker, BrainCircuit, FileSearch, FlaskConical, Orbit, ShieldAlert, Stethoscope } from "lucide-react";
+import {
+  ArrowRight,
+  Beaker,
+  BrainCircuit,
+  FileSearch,
+  FlaskConical,
+  Orbit,
+  ShieldAlert,
+  Stethoscope,
+} from "lucide-react";
 
 import { AgentShowcaseCard } from "@/components/landing/AgentShowcaseCard";
 import { AnimatedAgentPanel } from "@/components/landing/AnimatedAgentPanel";
@@ -7,7 +16,6 @@ import { DebateConsensusShowcase } from "@/components/landing/DebateConsensusSho
 import { FinalCta } from "@/components/landing/FinalCta";
 import { LandingNavbar } from "@/components/landing/LandingNavbar";
 import { ReportPreview } from "@/components/landing/ReportPreview";
-import { SafetyDisclaimer } from "@/components/landing/SafetyDisclaimer";
 import { StatBand } from "@/components/landing/StatBand";
 import { WorkflowTimeline } from "@/components/landing/WorkflowTimeline";
 import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
@@ -75,44 +83,43 @@ export default function Home() {
       <LandingNavbar />
 
       <main className="overflow-hidden pb-6">
-        <section className="section-shell px-4 pt-8">
-          <div className="hero-frame relative overflow-hidden rounded-[2.5rem] border border-[var(--border)] bg-[var(--panel)] px-6 py-7 shadow-[var(--shadow-hero)] lg:px-10 lg:py-9">
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(96,165,250,0.12),transparent_30%),radial-gradient(circle_at_78%_26%,rgba(29,78,216,0.18),transparent_28%),linear-gradient(180deg,rgba(255,255,255,0.02),transparent)]" />
-            <div className="relative grid gap-8 lg:grid-cols-[0.8fr_1.2fr] lg:items-center">
-              <div>
-                <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--panel-strong)] px-3 py-2 font-mono text-[11px] uppercase tracking-[0.26em] text-[var(--text-secondary)]">
+        <section className="relative px-4 pt-6 lg:pt-5">
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(96,165,250,0.3),transparent)]" />
+          <div className="section-shell relative">
+            <div className="grid gap-8 lg:h-[min(640px,calc(100svh-8rem))] lg:min-h-[540px] lg:grid-cols-[0.95fr_1.05fr] lg:items-center xl:gap-12">
+              <div className="max-w-[35rem] py-3 lg:py-0">
+                <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--panel)] px-3.5 py-2 text-sm font-medium text-[var(--text-primary)] shadow-[var(--shadow-sm)] backdrop-blur-xl">
                   <Orbit className="h-4 w-4 text-[var(--accent-bright)]" />
-                  Aetheris
+                  <span>Aetheris</span>
                 </div>
 
-                <p className="mt-6 text-sm font-medium uppercase tracking-[0.24em] text-[var(--accent-bright)]">
-                  Multi-agent research intelligence for pharma documents.
-                </p>
-                <h1 className="headline-display mt-4 max-w-4xl text-5xl font-semibold tracking-[-0.05em] text-[var(--text-primary)] md:text-6xl xl:text-[4.35rem]">
-                  AI Research Workspace for Pharma Document Intelligence
+                <h1 className="mt-6 max-w-[38rem] text-[3rem] font-semibold leading-[1.03] text-[var(--text-primary)] sm:text-[3.45rem] lg:text-[3.3rem] xl:text-[3.55rem]">
+                  <span className="block">AI Research</span>
+                  <span className="block opacity-[0.82]">Workspace for</span>
+                  <span className="block pb-2 bg-[linear-gradient(100deg,#f8fbff_0%,#9cccff_54%,#e4efff_100%)] bg-clip-text text-transparent">
+                    Clinical Intelligence
+                  </span>
                 </h1>
-                <p className="mt-5 max-w-2xl text-lg leading-8 text-[var(--text-secondary)]">
-                  Upload clinical and pharmaceutical PDFs, orchestrate specialized AI agents,
-                  compare evidence, surface uncertainty, and generate structured research
-                  briefings with safety-first framing.
+                <p className="mt-6 max-w-[31rem] text-base leading-7 text-[var(--text-secondary)] sm:text-lg">
+                  Aetheris turns pharma and clinical PDFs into evidence-linked insight,
+                  coordinating specialist AI agents into a clear research brief.
                 </p>
 
-                <div className="mt-7 flex flex-wrap gap-3">
+                <div className="mt-8 flex flex-wrap gap-3">
                   <Link
                     href="/research/new"
-                    className="inline-flex items-center justify-center rounded-full bg-[var(--accent)] px-6 py-3.5 text-sm font-semibold text-white shadow-[var(--shadow-glow)] transition duration-300 hover:translate-y-[-1px] hover:bg-[var(--accent-strong)]"
+                    className="group inline-flex h-12 items-center justify-center gap-2 rounded-full bg-[linear-gradient(135deg,#1d4ed8,#4f8df8)] px-5 text-sm font-semibold text-white shadow-[0_18px_50px_rgba(37,99,235,0.34)] transition duration-300 hover:translate-y-[-1px] hover:shadow-[0_22px_60px_rgba(37,99,235,0.45)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent-bright)]"
                   >
-                    Launch demo workspace
+                    Start research
+                    <ArrowRight className="h-4 w-4 transition duration-300 group-hover:translate-x-0.5" />
                   </Link>
                   <Link
                     href="/dashboard"
-                    className="inline-flex items-center justify-center rounded-full border border-[var(--border)] bg-[var(--panel-strong)] px-6 py-3.5 text-sm font-semibold text-[var(--text-primary)] transition duration-300 hover:border-[var(--accent-border)] hover:bg-[var(--panel-muted)]"
+                    className="inline-flex h-12 items-center justify-center rounded-full border border-[var(--border)] bg-[rgba(255,255,255,0.045)] px-5 text-sm font-semibold text-[var(--text-primary)] shadow-[0_14px_38px_rgba(2,6,23,0.18)] backdrop-blur-xl transition duration-300 hover:translate-y-[-1px] hover:border-[var(--accent-border)] hover:bg-[rgba(255,255,255,0.08)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent-bright)]"
                   >
-                    View dashboard
+                    View workspace
                   </Link>
                 </div>
-
-                <SafetyDisclaimer body={RESEARCH_DISCLAIMER} className="mt-7 max-w-2xl" />
               </div>
 
               <AnimatedAgentPanel />
