@@ -6,6 +6,7 @@ import {
   useMotionValueEvent,
   useReducedMotion,
   useScroll,
+  useTransform,
 } from "framer-motion";
 import {
   BrainCircuit,
@@ -18,6 +19,7 @@ import {
   SearchCode,
 } from "lucide-react";
 import { useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 const steps = [
   {
@@ -78,8 +80,30 @@ export function WorkflowTimeline() {
   const sectionRef = useRef<HTMLElement | null>(null);
   const [activeStep, setActiveStep] = useState(0);
   const [pinPhase, setPinPhase] = useState<PinPhase>("before");
+  const pinPhaseRef = useRef<PinPhase>("before");
   const reduceMotion = useReducedMotion();
   const { scrollY } = useScroll();
+  const sectionProgress = useTransform(scrollY, (latest) => {
+    const section = sectionRef.current;
+
+    if (!section || typeof window === "undefined") {
+      return 0;
+    }
+
+    const sectionTop = section.offsetTop;
+    const scrollableDistance = Math.max(1, section.offsetHeight - window.innerHeight);
+
+    return Math.min(1, Math.max(0, (latest - sectionTop) / scrollableDistance));
+  });
+  const cobaltGlowOpacity = useTransform(sectionProgress, [0, 0.2, 0.5, 0.78, 1], [0, 0.38, 0.56, 0.26, 0]);
+  const deepBlueGlowOpacity = useTransform(sectionProgress, [0, 0.24, 0.5, 0.76, 1], [0, 0.22, 0.46, 0.28, 0]);
+  const navyDepthOpacity = useTransform(sectionProgress, [0, 0.25, 0.5, 0.75, 1], [0.2, 0.08, 0.03, 0.1, 0.2]);
+  const cobaltScale = useTransform(sectionProgress, [0, 0.5, 1], [0.72, 1.22, 0.86]);
+  const deepBlueScale = useTransform(sectionProgress, [0, 0.5, 1], [0.78, 1.12, 0.82]);
+  const cobaltX = useTransform(sectionProgress, [0, 0.25, 0.5, 0.75, 1], ["-34%", "-16%", "4%", "20%", "36%"]);
+  const cobaltY = useTransform(sectionProgress, [0, 0.5, 1], ["-18%", "2%", "18%"]);
+  const deepBlueX = useTransform(sectionProgress, [0, 0.35, 0.62, 1], ["24%", "8%", "-10%", "-28%"]);
+  const deepBlueY = useTransform(sectionProgress, [0, 0.5, 1], ["12%", "34%", "8%"]);
 
   const active = steps[activeStep];
   const ActiveIcon = active.icon;
@@ -100,7 +124,12 @@ export function WorkflowTimeline() {
       latest < sectionTop ? "before" : latest > sectionEnd ? "after" : "active";
 
     setActiveStep((current) => (current === nextStep ? current : nextStep));
-    setPinPhase((current) => (current === nextPhase ? current : nextPhase));
+    if (pinPhaseRef.current !== nextPhase) {
+      pinPhaseRef.current = nextPhase;
+      flushSync(() => {
+        setPinPhase(nextPhase);
+      });
+    }
   });
 
   function scrollToStep(index: number) {
@@ -139,9 +168,44 @@ export function WorkflowTimeline() {
   }
 
   return (
-    <section ref={sectionRef} className="relative px-4 pt-16 lg:h-[420vh]" id="workflow">
+    <section ref={sectionRef} className="relative isolate overflow-hidden px-4 pt-16 lg:h-[420vh]" id="workflow">
+      <motion.div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 z-0 bg-[linear-gradient(180deg,rgba(2,6,23,0.04),rgba(7,17,31,0.48)_34%,rgba(3,7,18,0.7)_74%,rgba(2,6,23,0.08))]"
+        style={{ opacity: reduceMotion ? 0.14 : navyDepthOpacity }}
+      />
+      <motion.div
+        aria-hidden="true"
+        className="pointer-events-none absolute left-[-18%] top-[4%] z-0 h-[72rem] w-[72rem] rounded-full bg-[radial-gradient(circle,rgba(30,64,175,0.56)_0%,rgba(30,58,138,0.34)_32%,rgba(15,23,42,0.18)_58%,transparent_76%)] blur-3xl"
+        style={{
+          opacity: reduceMotion ? 0.14 : cobaltGlowOpacity,
+          scale: reduceMotion ? 1 : cobaltScale,
+          x: reduceMotion ? 0 : cobaltX,
+          y: reduceMotion ? 0 : cobaltY,
+        }}
+      />
+      <motion.div
+        aria-hidden="true"
+        className="pointer-events-none absolute right-[-18%] top-[18%] z-0 h-[58rem] w-[58rem] rounded-full bg-[radial-gradient(circle,rgba(37,99,235,0.4)_0%,rgba(30,64,175,0.28)_30%,rgba(12,24,45,0.2)_58%,transparent_76%)] blur-3xl"
+        style={{
+          opacity: reduceMotion ? 0.12 : deepBlueGlowOpacity,
+          scale: reduceMotion ? 1 : deepBlueScale,
+          x: reduceMotion ? 0 : deepBlueX,
+          y: reduceMotion ? 0 : deepBlueY,
+        }}
+      />
+      <motion.div
+        aria-hidden="true"
+        className="pointer-events-none absolute left-[22%] top-[42%] z-0 h-[40rem] w-[40rem] rounded-full bg-[radial-gradient(circle,rgba(59,130,246,0.26)_0%,rgba(29,78,216,0.18)_38%,rgba(8,17,34,0.08)_62%,transparent_74%)] blur-3xl"
+        style={{
+          opacity: reduceMotion ? 0.08 : deepBlueGlowOpacity,
+          scale: reduceMotion ? 1 : cobaltScale,
+          x: reduceMotion ? 0 : deepBlueX,
+          y: reduceMotion ? 0 : cobaltY,
+        }}
+      />
       <div
-        className={`section-shell lg:flex lg:h-[calc(100svh-6rem)] lg:items-center ${
+        className={`section-shell relative z-10 lg:flex lg:h-[calc(100svh-6rem)] lg:items-center ${
           pinPhase === "active"
             ? "lg:fixed lg:left-1/2 lg:top-16 lg:z-30 lg:-translate-x-1/2"
             : pinPhase === "after"

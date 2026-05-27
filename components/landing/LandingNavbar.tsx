@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { ArrowRight, Orbit } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 
+import { BrandMark } from "@/components/BrandMark";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
 const links = [
@@ -17,9 +18,7 @@ export function LandingNavbar() {
       <div className="section-shell">
         <div className="flex items-center justify-between gap-4 rounded-full border border-[var(--border)] bg-[color:var(--nav-shell)] px-4 py-3 shadow-[var(--shadow-md)] backdrop-blur-xl">
           <Link href="/" className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--panel-strong)] text-[var(--accent-bright)]">
-              <Orbit className="h-4 w-4" />
-            </div>
+            <BrandMark className="h-10 w-10 rounded-full border border-[var(--border)] bg-[var(--panel-strong)] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]" />
             <div>
               <p className="font-mono text-[10px] uppercase tracking-[0.34em] text-[var(--text-muted)]">
                 Aetheris

@@ -1,6 +1,8 @@
 import Link from "next/link";
-import { Database, FileText, Microscope, ShieldAlert } from "lucide-react";
+import { Database, FileText, ShieldAlert } from "lucide-react";
 import type { ReactNode } from "react";
+
+import { BrandMark } from "@/components/BrandMark";
 
 export function DashboardShell({
   title,
@@ -16,9 +18,7 @@ export function DashboardShell({
       <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[var(--nav-shell)] backdrop-blur-xl">
         <div className="section-shell flex items-center justify-between gap-6 px-4 py-4">
           <Link href="/" className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--navy)] text-white shadow-lg">
-              <Microscope className="h-5 w-5" />
-            </div>
+            <BrandMark className="h-11 w-11 rounded-2xl border border-[var(--border)] bg-[linear-gradient(145deg,rgba(15,23,42,0.96),rgba(19,34,56,0.9))] shadow-lg" />
             <div>
               <p className="font-mono text-[11px] uppercase tracking-[0.3em] text-[var(--text-muted)]">
                 Aetheris

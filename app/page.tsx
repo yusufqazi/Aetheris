@@ -5,11 +5,11 @@ import {
   BrainCircuit,
   FileSearch,
   FlaskConical,
-  Orbit,
   ShieldAlert,
   Stethoscope,
 } from "lucide-react";
 
+import { BrandMark } from "@/components/BrandMark";
 import { AgentShowcaseCard } from "@/components/landing/AgentShowcaseCard";
 import { AnimatedAgentPanel } from "@/components/landing/AnimatedAgentPanel";
 import { DebateConsensusShowcase } from "@/components/landing/DebateConsensusShowcase";
@@ -89,7 +89,7 @@ export default function Home() {
             <div className="grid gap-8 lg:h-[min(640px,calc(100svh-8rem))] lg:min-h-[540px] lg:grid-cols-[0.95fr_1.05fr] lg:items-center xl:gap-12">
               <div className="max-w-[35rem] py-3 lg:py-0">
                 <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--panel)] px-3.5 py-2 text-sm font-medium text-[var(--text-primary)] shadow-[var(--shadow-sm)] backdrop-blur-xl">
-                  <Orbit className="h-4 w-4 text-[var(--accent-bright)]" />
+                  <BrandMark className="h-5 w-5 rounded-full bg-[rgba(15,23,42,0.3)]" />
                   <span>Aetheris</span>
                 </div>
 
