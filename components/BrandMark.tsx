@@ -16,7 +16,7 @@ export function BrandMark({ className = "" }: BrandMarkProps) {
         alt=""
         width={1024}
         height={1024}
-        className="relative h-[78%] w-[78%] object-contain drop-shadow-[0_0_12px_rgba(96,165,250,0.28)]"
+        className="relative h-[78%] w-[78%] object-contain mix-blend-screen drop-shadow-[0_0_12px_rgba(96,165,250,0.28)]"
         priority
       />
     </span>

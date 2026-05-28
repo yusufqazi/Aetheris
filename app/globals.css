@@ -67,6 +67,7 @@ html.dark {
 html {
   scroll-behavior: smooth;
   background: var(--bg);
+  scrollbar-width: none;
 }
 
 body {
@@ -76,6 +77,12 @@ body {
     linear-gradient(180deg, var(--bg) 0%, color-mix(in srgb, var(--bg) 92%, black 8%) 100%);
   color: var(--text-primary);
   font-family: var(--font-manrope), sans-serif;
+  -ms-overflow-style: none;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  display: none;
 }
 
 a {
