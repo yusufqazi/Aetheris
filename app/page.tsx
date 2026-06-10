@@ -1,89 +1,26 @@
 import Link from "next/link";
-import {
-  ArrowRight,
-  Beaker,
-  BrainCircuit,
-  FileSearch,
-  FlaskConical,
-  ShieldAlert,
-  Stethoscope,
-} from "lucide-react";
+import { ArrowRight } from "lucide-react";
 
 import { BrandMark } from "@/components/BrandMark";
-import { AgentShowcaseCard } from "@/components/landing/AgentShowcaseCard";
 import { AnimatedAgentPanel } from "@/components/landing/AnimatedAgentPanel";
+import { ArchitectureDiagram } from "@/components/landing/ArchitectureDiagram";
 import { DebateConsensusShowcase } from "@/components/landing/DebateConsensusShowcase";
 import { FinalCta } from "@/components/landing/FinalCta";
 import { LandingNavbar } from "@/components/landing/LandingNavbar";
+import { MultiAgentAnalysis } from "@/components/landing/MultiAgentAnalysis";
 import { ReportPreview } from "@/components/landing/ReportPreview";
-import { StatBand } from "@/components/landing/StatBand";
 import { WorkflowTimeline } from "@/components/landing/WorkflowTimeline";
 import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
 
-const agents = [
-  {
-    title: "Literature Retrieval Agent",
-    purpose: "Ranks the strongest passages before the rest of the system reasons over them.",
-    output: "Most relevant safety excerpt identified with source context attached.",
-    confidence: "medium",
-    uncertainty: "Depends on source quality",
-    icon: FileSearch,
-    accent: "#7dd3fc",
-  },
-  {
-    title: "Drug Interaction Agent",
-    purpose: "Reviews co-administration concerns without overstating certainty.",
-    output: "Possible exposure increase discussed cautiously, not as a firm contraindication.",
-    confidence: "moderate",
-    uncertainty: "Needs PK context",
-    icon: FlaskConical,
-    accent: "#93c5fd",
-  },
-  {
-    title: "Adverse Reaction Agent",
-    purpose: "Extracts recurring safety signals and population-specific warnings.",
-    output: "Nausea and dizziness recur across the combination arm in source language.",
-    confidence: "supported",
-    uncertainty: "Frequency may be partial",
-    icon: ShieldAlert,
-    accent: "#60a5fa",
-  },
-  {
-    title: "Clinical Trial Summarizer",
-    purpose: "Condenses design, endpoints, outcomes, and limitations into one briefing view.",
-    output: "Mid-stage randomized trial with useful benefit-risk framing and narrow subgroup depth.",
-    confidence: "structured",
-    uncertainty: "Population may be narrow",
-    icon: Beaker,
-    accent: "#a5b4fc",
-  },
-  {
-    title: "Debate / Consensus Agent",
-    purpose: "Surfaces disagreement, missing evidence, and where conclusions should stay bounded.",
-    output: "Agents align on safety language but differ on how strong the interaction signal is.",
-    confidence: "balanced",
-    uncertainty: "Depends on evidence breadth",
-    icon: BrainCircuit,
-    accent: "#c4b5fd",
-  },
-  {
-    title: "Report Generation Agent",
-    purpose: "Assembles the final research memo with summary, evidence, and follow-up direction.",
-    output: "Executive-ready report with visible limitations and research-only framing.",
-    confidence: "briefing-ready",
-    uncertainty: "Support material only",
-    icon: Stethoscope,
-    accent: "#67e8f9",
-  },
-];
-
 export default function Home() {
   return (
-    <>
+    <div className="relative isolate bg-[#071a31]">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-0 h-[calc(100svh+6rem)] bg-[radial-gradient(circle_at_20%_18%,rgba(37,99,235,0.22),transparent_32%),radial-gradient(circle_at_82%_28%,rgba(30,64,175,0.2),transparent_34%),linear-gradient(180deg,#071a31_0%,#08192f_62%,#061426_100%)]" />
+      <div className="pointer-events-none absolute inset-x-0 top-[calc(100svh-2rem)] z-0 h-32 bg-[linear-gradient(180deg,transparent,#061426)]" />
       <LandingNavbar />
 
-      <main className="overflow-hidden pb-6">
-        <section className="relative px-4 pt-6 lg:pt-5">
+      <main className="relative z-10 overflow-x-clip pb-6">
+        <section className="relative isolate px-4 pt-6 lg:pt-5">
           <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(96,165,250,0.3),transparent)]" />
           <div className="section-shell relative">
             <div className="grid gap-8 lg:h-[min(640px,calc(100svh-8rem))] lg:min-h-[540px] lg:grid-cols-[0.95fr_1.05fr] lg:items-center xl:gap-12">
@@ -101,8 +38,8 @@ export default function Home() {
                   </span>
                 </h1>
                 <p className="mt-6 max-w-[31rem] text-base leading-7 text-[var(--text-secondary)] sm:text-lg">
-                  Aetheris turns pharma and clinical PDFs into evidence-linked insight,
-                  coordinating specialist AI agents into a clear research brief.
+                  Aetheris turns clinical and pharma PDFs into source-grounded research
+                  briefings, with evidence, disagreement, and uncertainty kept visible.
                 </p>
 
                 <div className="mt-8 flex flex-wrap gap-3">
@@ -127,37 +64,20 @@ export default function Home() {
           </div>
         </section>
 
-        <StatBand />
         <WorkflowTimeline />
-
-        <section className="section-shell px-4 pt-16" id="agents">
-          <div className="mx-auto max-w-3xl text-center">
-            <p className="section-label">Agent System</p>
-            <h2 className="section-title mt-3">Six focused agents, shown quickly and cleanly.</h2>
-            <p className="section-copy mt-3">
-              Each role has a clear purpose, a single example output, and a visible boundary for
-              uncertainty-aware research support.
-            </p>
-          </div>
-
-          <div className="mt-10 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {agents.map((agent) => (
-              <AgentShowcaseCard key={agent.title} {...agent} />
-            ))}
-          </div>
-        </section>
-
+        <MultiAgentAnalysis />
         <DebateConsensusShowcase />
         <ReportPreview disclaimer={RESEARCH_DISCLAIMER} />
+        <ArchitectureDiagram />
         <FinalCta />
 
         <footer className="section-shell px-4 pb-10">
           <div className="flex flex-col gap-3 border-t border-[var(--border)] pt-6 text-sm text-[var(--text-muted)] md:flex-row md:items-center md:justify-between">
             <p>Aetheris · multi-agent research intelligence for pharma documents.</p>
-            <p>Built for evidence synthesis, uncertainty-aware analysis, and premium portfolio presentation.</p>
+            <p>Research support only. Requires clinical, regulatory, and source review.</p>
           </div>
         </footer>
       </main>
-    </>
+    </div>
   );
 }

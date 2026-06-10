@@ -67,7 +67,11 @@ export function LandingNavbar() {
   }
 
   return (
-    <header className={`sticky top-0 z-50 px-4 transition-[padding] duration-[250ms] ease-out ${isScrolled ? "pt-2.5" : "pt-4"}`}>
+    <header
+      className={`sticky top-0 z-50 px-4 transition-[padding] duration-[250ms] ease-out ${
+        isScrolled ? "pt-2.5" : "pt-4"
+      }`}
+    >
       <div className="section-shell">
         <div
           className={`relative overflow-hidden rounded-full border border-white/14 bg-[linear-gradient(135deg,rgba(226,232,240,0.11),rgba(15,23,42,0.58)_22%,rgba(8,18,34,0.42)_62%,rgba(30,64,175,0.14))] px-4 shadow-[0_22px_70px_rgba(2,6,23,0.36),inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-1px_0_rgba(15,23,42,0.34)] backdrop-blur-[28px] transition-[padding,box-shadow,background-color] duration-[250ms] ease-out after:pointer-events-none after:absolute after:inset-x-8 after:top-0 after:h-px after:bg-[linear-gradient(90deg,transparent,rgba(239,246,255,0.72),rgba(147,197,253,0.24),transparent)] after:content-[''] ${

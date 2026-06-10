@@ -2,28 +2,28 @@ import { BarChart3, BrainCircuit, Files, SearchCheck, Shield } from "lucide-reac
 
 const stats = [
   {
-    title: "6 specialized agents",
-    description: "Dedicated roles for retrieval, safety, interaction, trials, consensus, and reports.",
+    title: "Session-level memory",
+    description: "The same upload, question, excerpts, findings, and limitations stay connected.",
     icon: BrainCircuit,
   },
   {
-    title: "PDF-native workflow",
-    description: "Built around clinical and pharma document ingestion instead of free-form chat alone.",
+    title: "Document-first intake",
+    description: "Clinical studies, labels, and appendices are treated as source material, not chat context.",
     icon: Files,
   },
   {
     title: "Evidence-ranked retrieval",
-    description: "Relevant excerpts are surfaced before reasoning layers assemble the final view.",
+    description: "Relevant passages are selected before agents reason over safety and interaction concerns.",
     icon: SearchCheck,
   },
   {
-    title: "Consensus-based synthesis",
-    description: "Conflicting signals are compared before the platform drafts a briefing.",
+    title: "Disagreement preserved",
+    description: "Conflicts, missing appendices, and uncertainty labels remain visible in the conclusion.",
     icon: BarChart3,
   },
   {
-    title: "Research-only safety framing",
-    description: "Outputs stay uncertainty-aware and explicitly outside clinical decision automation.",
+    title: "Research-only framing",
+    description: "Outputs support review and are not a substitute for physician judgment or regulatory work.",
     icon: Shield,
   },
 ];

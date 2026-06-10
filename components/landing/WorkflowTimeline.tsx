@@ -25,7 +25,7 @@ const steps = [
   {
     title: "Upload source documents",
     detail: "Source intake",
-    copy: "Clinical studies, labels, and internal PDFs enter a workspace built for document-first research review.",
+    copy: "A researcher uploads oncology-study.pdf, safety-label.pdf, and exposure-appendix.pdf for one focused review.",
     icon: Files,
     accent: "from-[#1d4ed8]/40 via-[#60a5fa]/18 to-transparent",
     visual: "documents",
@@ -33,7 +33,7 @@ const steps = [
   {
     title: "Extract and chunk text",
     detail: "Text preparation",
-    copy: "Aetheris turns long PDFs into structured passages so retrieval and downstream review stay source-grounded.",
+    copy: "Long PDFs become structured passages tied to page context, source names, and review-ready metadata.",
     icon: FileStack,
     accent: "from-[#2563eb]/36 via-[#7dd3fc]/16 to-transparent",
     visual: "chunks",
@@ -41,7 +41,7 @@ const steps = [
   {
     title: "Retrieve evidence",
     detail: "Evidence ranking",
-    copy: "The system surfaces the most relevant excerpts before specialist reasoning begins.",
+    copy: "The system ranks excerpts about adverse-event burden, interaction language, and missing exposure context.",
     icon: SearchCode,
     accent: "from-[#60a5fa]/34 via-[#bfdbfe]/16 to-transparent",
     visual: "retrieval",
@@ -49,7 +49,7 @@ const steps = [
   {
     title: "Run specialist agents",
     detail: "Parallel review",
-    copy: "Retrieval, safety, interaction, and trial agents review the same evidence from distinct perspectives.",
+    copy: "Safety, interaction, trial, retrieval, consensus, and report agents review the same ranked evidence.",
     icon: BrainCircuit,
     accent: "from-[#38bdf8]/34 via-[#93c5fd]/16 to-transparent",
     visual: "agents",
@@ -57,7 +57,7 @@ const steps = [
   {
     title: "Compare disagreements",
     detail: "Consensus shaping",
-    copy: "Conflicts, missing evidence, and confidence gaps are preserved instead of flattened away.",
+    copy: "Agreement, disagreement, missing appendices, and escalation boundaries are preserved before conclusion.",
     icon: GitCompareArrows,
     accent: "from-[#93c5fd]/30 via-[#c4b5fd]/14 to-transparent",
     visual: "debate",
@@ -65,7 +65,7 @@ const steps = [
   {
     title: "Generate final briefing",
     detail: "Report delivery",
-    copy: "The final memo combines summary, evidence, uncertainty, and follow-up direction in a single artifact.",
+    copy: "The final artifact combines executive summary, evidence table, safety signals, limits, and follow-up questions.",
     icon: ScrollText,
     accent: "from-[#bfdbfe]/30 via-[#67e8f9]/14 to-transparent",
     visual: "report",
@@ -95,15 +95,28 @@ export function WorkflowTimeline() {
 
     return Math.min(1, Math.max(0, (latest - sectionTop) / scrollableDistance));
   });
-  const cobaltGlowOpacity = useTransform(sectionProgress, [0, 0.2, 0.5, 0.78, 1], [0, 0.38, 0.56, 0.26, 0]);
-  const deepBlueGlowOpacity = useTransform(sectionProgress, [0, 0.24, 0.5, 0.76, 1], [0, 0.22, 0.46, 0.28, 0]);
-  const navyDepthOpacity = useTransform(sectionProgress, [0, 0.25, 0.5, 0.75, 1], [0.2, 0.08, 0.03, 0.1, 0.2]);
-  const cobaltScale = useTransform(sectionProgress, [0, 0.5, 1], [0.72, 1.22, 0.86]);
-  const deepBlueScale = useTransform(sectionProgress, [0, 0.5, 1], [0.78, 1.12, 0.82]);
+  const cobaltGlowOpacity = useTransform(
+    sectionProgress,
+    [0, 0.08, 0.22, 0.4, 0.62, 0.82, 1],
+    [0, 0, 0.28, 0.12, 0.42, 0.14, 0],
+  );
+  const deepBlueGlowOpacity = useTransform(
+    sectionProgress,
+    [0, 0.1, 0.26, 0.46, 0.68, 0.86, 1],
+    [0, 0, 0.14, 0.38, 0.12, 0.3, 0],
+  );
+  const navyDepthOpacity = useTransform(
+    sectionProgress,
+    [0, 0.1, 0.28, 0.48, 0.68, 0.86, 1],
+    [0, 0, 0.28, 0.6, 0.3, 0.7, 1],
+  );
+  const cobaltScale = useTransform(sectionProgress, [0, 0.36, 0.66, 1], [0.7, 1.08, 1.2, 0.86]);
+  const deepBlueScale = useTransform(sectionProgress, [0, 0.42, 0.76, 1], [0.74, 1.14, 1.02, 0.82]);
   const cobaltX = useTransform(sectionProgress, [0, 0.25, 0.5, 0.75, 1], ["-34%", "-16%", "4%", "20%", "36%"]);
   const cobaltY = useTransform(sectionProgress, [0, 0.5, 1], ["-18%", "2%", "18%"]);
   const deepBlueX = useTransform(sectionProgress, [0, 0.35, 0.62, 1], ["24%", "8%", "-10%", "-28%"]);
   const deepBlueY = useTransform(sectionProgress, [0, 0.5, 1], ["12%", "34%", "8%"]);
+  const blackBlendOpacity = useTransform(sectionProgress, [0.76, 0.92, 1], [0, 0.72, 1]);
 
   const active = steps[activeStep];
   const ActiveIcon = active.icon;
@@ -168,11 +181,15 @@ export function WorkflowTimeline() {
   }
 
   return (
-    <section ref={sectionRef} className="relative isolate overflow-hidden px-4 pt-16 lg:h-[420vh]" id="workflow">
+    <section
+      ref={sectionRef}
+      className="relative isolate overflow-hidden bg-[#061426] px-4 pt-16 lg:h-[420vh]"
+      id="workflow"
+    >
       <motion.div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 z-0 bg-[linear-gradient(180deg,rgba(2,6,23,0.04),rgba(7,17,31,0.48)_34%,rgba(3,7,18,0.7)_74%,rgba(2,6,23,0.08))]"
-        style={{ opacity: reduceMotion ? 0.14 : navyDepthOpacity }}
+        className="pointer-events-none absolute inset-0 z-0 bg-[linear-gradient(180deg,rgba(6,20,38,0.9),rgba(8,28,54,0.58)_22%,rgba(4,12,24,0.88)_48%,rgba(10,31,58,0.62)_66%,rgba(0,0,0,0.96))]"
+        style={{ opacity: reduceMotion ? 0 : navyDepthOpacity }}
       />
       <motion.div
         aria-hidden="true"
@@ -204,6 +221,11 @@ export function WorkflowTimeline() {
           y: reduceMotion ? 0 : cobaltY,
         }}
       />
+      <motion.div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 z-[1] bg-black"
+        style={{ opacity: blackBlendOpacity }}
+      />
       <div
         className={`section-shell relative z-10 lg:flex lg:h-[calc(100svh-6rem)] lg:items-center ${
           pinPhase === "active"
@@ -219,8 +241,8 @@ export function WorkflowTimeline() {
               How Aetheris turns documents into research briefings
             </h2>
             <p className="section-copy mx-auto mt-3">
-              Upload source documents, route evidence through specialized agents, compare
-              uncertainty, and generate a structured research-ready briefing.
+              Follow one oncology safety review from uploaded PDFs to ranked evidence,
+              uncertainty-aware consensus, and a structured briefing.
             </p>
           </div>
 
@@ -240,8 +262,8 @@ export function WorkflowTimeline() {
               </div>
             </div>
 
-            <div className="flex h-[460px] flex-col rounded-[1.85rem] border border-[var(--border)] bg-[var(--panel)] p-2.5 shadow-[var(--shadow-lg)] backdrop-blur-xl">
-              <div className="relative h-[386px] shrink-0">
+            <div className="flex h-[460px] flex-col gap-3 rounded-[1.85rem] border border-[var(--border)] bg-[var(--panel)] p-3 shadow-[var(--shadow-lg)] backdrop-blur-xl">
+              <div className="relative min-h-0 flex-1">
                 <AnimatePresence mode="wait">
                   <motion.div
                     key={active.title}
@@ -258,7 +280,7 @@ export function WorkflowTimeline() {
                       <div className="flex items-start justify-between gap-4">
                         <div>
                           <p className="font-mono text-[11px] uppercase tracking-[0.24em] text-[var(--accent-bright)]">
-                            Beat 0{activeStep + 1}
+                            Phase 0{activeStep + 1}
                           </p>
                           <h3 className="mt-2 text-[1.45rem] font-semibold leading-tight text-[var(--text-primary)]">
                             {active.title}
@@ -281,7 +303,7 @@ export function WorkflowTimeline() {
                 </AnimatePresence>
               </div>
 
-              <div className="mt-2 flex items-center justify-between gap-3 rounded-[1.25rem] border border-[var(--border)] bg-[var(--panel-strong)] px-3.5 py-2">
+              <div className="flex shrink-0 items-center justify-between gap-3 rounded-[1.35rem] border border-[var(--border)] bg-[var(--panel-strong)] px-4 py-2.5">
                 <div className="flex items-center gap-2.5">
                   <span className="h-1.5 w-16 overflow-hidden rounded-full bg-[var(--panel-muted)]">
                     <motion.span
@@ -446,7 +468,7 @@ function StepScene({ type }: { type: StepVisual }) {
         <div className="absolute inset-x-10 top-1/2 h-px bg-[linear-gradient(90deg,transparent,rgba(147,197,253,0.62),transparent)]" />
         <div className="relative grid h-full min-h-[163px] grid-cols-[1fr_0.72fr] items-center gap-4">
           <div className="space-y-2.5">
-            {["Study dossier.pdf", "Safety labeling.pdf", "Exposure appendix.pdf"].map((document, index) => (
+            {["oncology-study.pdf", "safety-label.pdf", "exposure-appendix.pdf"].map((document, index) => (
               <motion.div
                 key={document}
                 initial={reduceMotion ? false : { opacity: 0, x: -18 }}
@@ -464,6 +486,9 @@ function StepScene({ type }: { type: StepVisual }) {
           <div className={`${panelClass} p-4`}>
             <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-slate-400">
               Intake
+            </p>
+            <p className="mt-3 text-sm leading-6 text-slate-100">
+              Compare adverse events and possible interaction concerns.
             </p>
             <div className="mt-5 space-y-2.5">
               <span className="block h-2 rounded-full bg-[#93c5fd]/45" />
@@ -486,6 +511,9 @@ function StepScene({ type }: { type: StepVisual }) {
         <div className={`${panelClass} p-4`}>
           <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-slate-400">
             Source text
+          </p>
+          <p className="mt-4 text-sm leading-6 text-slate-100">
+            Safety labeling notes recurring nausea and dizziness in treatment context.
           </p>
           <div className="mt-5 space-y-2">
             {[100, 92, 74, 88, 54].map((width) => (
@@ -531,11 +559,11 @@ function StepScene({ type }: { type: StepVisual }) {
             Query
           </p>
           <p className="mt-4 text-sm leading-6 text-slate-100">
-            Compare adverse event burden across uploaded studies.
+            Compare adverse event burden and possible interaction concerns across uploaded sources.
           </p>
         </div>
         <div className="space-y-3">
-          {["Safety section matched", "Interaction language ranked", "Trial limitation excerpt ranked"].map(
+          {["Safety labeling: nausea and dizziness", "Labeling: interaction language appears", "Study: oncology-only, short follow-up"].map(
             (item, index) => (
               <motion.div
                 key={item}
@@ -590,7 +618,7 @@ function StepScene({ type }: { type: StepVisual }) {
         transition={transition}
         className="grid min-h-[195px] gap-4 rounded-[1.35rem] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.66),rgba(8,18,32,0.88))] p-4 md:grid-cols-3"
       >
-        {["Interaction risk may be elevated.", "Study population is limited.", "Signal appears in multiple excerpts."].map(
+        {["Interaction concern appears in labeling language.", "Study population is narrow and follow-up is limited.", "Safety signal appears across uploaded excerpts."].map(
           (item, index) => (
             <motion.div
               key={item}
@@ -637,8 +665,8 @@ function StepScene({ type }: { type: StepVisual }) {
           Output
         </p>
         <p className="mt-4 text-sm leading-6 text-slate-100">
-          Summary, evidence traceability, uncertainty, and follow-up questions assemble into one
-          review-ready artifact.
+          Flag as research concern. Evidence is suggestive but incomplete and requires clinical
+          review before operational use.
         </p>
       </div>
     </motion.div>
