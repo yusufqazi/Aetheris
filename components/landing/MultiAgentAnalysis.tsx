@@ -93,12 +93,7 @@ export function MultiAgentAnalysis() {
     offset: ["start start", "end end"],
   });
 
-  const progress = useSpring(scrollYProgress, {
-    stiffness: 130,
-    damping: 30,
-    mass: 0.7,
-  });
-  const visibleProgress = reduceMotion ? scrollYProgress : progress;
+  const visibleProgress = scrollYProgress;
   const progressVelocity = useVelocity(scrollYProgress);
 
   const markerOffset = useSpring(

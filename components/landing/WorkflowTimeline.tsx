@@ -5,8 +5,10 @@ import {
   motion,
   useMotionValueEvent,
   useReducedMotion,
+  useSpring,
   useScroll,
   useTransform,
+  useVelocity,
 } from "framer-motion";
 import {
   BrainCircuit,
@@ -18,8 +20,7 @@ import {
   ScrollText,
   SearchCode,
 } from "lucide-react";
-import { useRef, useState } from "react";
-import { flushSync } from "react-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const steps = [
   {
@@ -74,13 +75,18 @@ const steps = [
 
 type Step = (typeof steps)[number];
 type StepVisual = Step["visual"];
-type PinPhase = "before" | "active" | "after";
+
+function clamp(value: number, min = 0, max = 1) {
+  return Math.min(max, Math.max(min, value));
+}
 
 export function WorkflowTimeline() {
   const sectionRef = useRef<HTMLElement | null>(null);
   const [activeStep, setActiveStep] = useState(0);
-  const [pinPhase, setPinPhase] = useState<PinPhase>("before");
-  const pinPhaseRef = useRef<PinPhase>("before");
+  const [railActive, setRailActive] = useState(false);
+  const activeStepRef = useRef(0);
+  const lastScrollYRef = useRef(0);
+  const railIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reduceMotion = useReducedMotion();
   const { scrollY } = useScroll();
   const sectionProgress = useTransform(scrollY, (latest) => {
@@ -116,37 +122,45 @@ export function WorkflowTimeline() {
   const cobaltY = useTransform(sectionProgress, [0, 0.5, 1], ["-18%", "2%", "18%"]);
   const deepBlueX = useTransform(sectionProgress, [0, 0.35, 0.62, 1], ["24%", "8%", "-10%", "-28%"]);
   const deepBlueY = useTransform(sectionProgress, [0, 0.5, 1], ["12%", "34%", "8%"]);
-  const blackBlendOpacity = useTransform(sectionProgress, [0.76, 0.92, 1], [0, 0.72, 1]);
+  const blackBlendOpacity = useTransform(
+    sectionProgress,
+    [0.06, 0.24, 0.42, 0.6, 0.78, 0.92, 1],
+    [0, 0.08, 0.2, 0.38, 0.58, 0.78, 0.96],
+  );
+  const railProgress = useSpring(sectionProgress, { stiffness: 210, damping: 24, mass: 0.62 });
+  const scrollVelocity = useVelocity(scrollY);
+  const railMotionProgress = reduceMotion ? sectionProgress : railProgress;
+  const railBubbleTop = useTransform(railMotionProgress, [0, 1], ["0%", "100%"]);
+  const railFillHeight = useTransform(railMotionProgress, [0, 1], ["0%", "100%"]);
+  const markerScaleX = useSpring(useTransform(scrollVelocity, [-3200, 0, 3200], [0.9, 1, 0.9]), {
+    stiffness: 320,
+    damping: 18,
+    mass: 0.45,
+  });
+  const markerScaleY = useSpring(useTransform(scrollVelocity, [-3200, 0, 3200], [1.2, 1, 1.2]), {
+    stiffness: 320,
+    damping: 18,
+    mass: 0.45,
+  });
+  const markerGlowOpacity = useSpring(useTransform(scrollVelocity, [-3200, 0, 3200], [0.8, 0.38, 0.8]), {
+    stiffness: 220,
+    damping: 20,
+    mass: 0.5,
+  });
 
   const active = steps[activeStep];
   const ActiveIcon = active.icon;
 
-  useMotionValueEvent(scrollY, "change", (latest) => {
-    const section = sectionRef.current;
+  const setCurrentStep = useCallback((index: number) => {
+    const nextIndex = Math.min(steps.length - 1, Math.max(0, index));
+    setActiveStep(nextIndex);
+    activeStepRef.current = nextIndex;
 
-    if (!section || typeof window === "undefined") {
-      return;
-    }
+    return nextIndex;
+  }, []);
 
-    const sectionTop = section.offsetTop;
-    const scrollableDistance = Math.max(1, section.offsetHeight - window.innerHeight);
-    const sectionEnd = sectionTop + scrollableDistance;
-    const bounded = Math.min(0.999, Math.max(0, (latest - sectionTop) / scrollableDistance));
-    const nextStep = Math.floor(bounded * steps.length);
-    const nextPhase: PinPhase =
-      latest < sectionTop ? "before" : latest > sectionEnd ? "after" : "active";
-
-    setActiveStep((current) => (current === nextStep ? current : nextStep));
-    if (pinPhaseRef.current !== nextPhase) {
-      pinPhaseRef.current = nextPhase;
-      flushSync(() => {
-        setPinPhase(nextPhase);
-      });
-    }
-  });
-
-  function scrollToStep(index: number) {
-    setActiveStep(index);
+  const scrollToStep = useCallback((index: number) => {
+    const nextIndex = setCurrentStep(index);
 
     if (typeof window === "undefined") {
       return;
@@ -154,7 +168,7 @@ export function WorkflowTimeline() {
 
     if (window.matchMedia("(max-width: 1023px)").matches) {
       document
-        .getElementById(`workflow-mobile-step-${index}`)
+        .getElementById(`workflow-mobile-step-${nextIndex}`)
         ?.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
       return;
     }
@@ -167,23 +181,64 @@ export function WorkflowTimeline() {
 
     const sectionTop = section.getBoundingClientRect().top + window.scrollY;
     const scrollableDistance = Math.max(0, section.offsetHeight - window.innerHeight);
-    const progress = index / Math.max(1, steps.length - 1);
+    const progress = nextIndex / Math.max(1, steps.length - 1);
 
     window.scrollTo({
       top: sectionTop + scrollableDistance * progress,
       behavior: reduceMotion ? "auto" : "smooth",
     });
-  }
+  }, [reduceMotion, setCurrentStep]);
+
+  useEffect(() => {
+    return () => {
+      if (railIdleTimerRef.current) {
+        clearTimeout(railIdleTimerRef.current);
+      }
+    };
+  }, []);
+
+  useMotionValueEvent(scrollY, "change", (latest) => {
+    const section = sectionRef.current;
+
+    if (!section || typeof window === "undefined") {
+      return;
+    }
+
+    if (Math.abs(latest - lastScrollYRef.current) > 0.5) {
+      setRailActive(true);
+
+      if (railIdleTimerRef.current) {
+        clearTimeout(railIdleTimerRef.current);
+      }
+
+      railIdleTimerRef.current = setTimeout(() => {
+        setRailActive(false);
+        railIdleTimerRef.current = null;
+      }, 420);
+    }
+
+    lastScrollYRef.current = latest;
+
+    const sectionTop = section.offsetTop;
+    const scrollableDistance = Math.max(1, section.offsetHeight - window.innerHeight);
+    const bounded = clamp((latest - sectionTop) / scrollableDistance);
+    const nextStep = Math.min(steps.length - 1, Math.round(bounded * (steps.length - 1)));
+
+    if (activeStepRef.current !== nextStep) {
+      activeStepRef.current = nextStep;
+      setActiveStep(nextStep);
+    }
+  });
 
   function goToRelativeStep(direction: -1 | 1) {
-    const nextStep = Math.min(steps.length - 1, Math.max(0, activeStep + direction));
+    const nextStep = Math.min(steps.length - 1, Math.max(0, activeStepRef.current + direction));
     scrollToStep(nextStep);
   }
 
   return (
     <section
       ref={sectionRef}
-      className="relative isolate overflow-hidden bg-[#061426] px-4 pt-16 lg:h-[420vh]"
+      className="relative isolate overflow-x-clip bg-[#061426] px-4 py-16 lg:h-[440vh] lg:py-0 lg:pt-24"
       id="workflow"
     >
       <motion.div
@@ -226,15 +281,7 @@ export function WorkflowTimeline() {
         className="pointer-events-none absolute inset-0 z-[1] bg-black"
         style={{ opacity: blackBlendOpacity }}
       />
-      <div
-        className={`section-shell relative z-10 lg:flex lg:h-[calc(100svh-6rem)] lg:items-center ${
-          pinPhase === "active"
-            ? "lg:fixed lg:left-1/2 lg:top-16 lg:z-30 lg:-translate-x-1/2"
-            : pinPhase === "after"
-              ? "lg:absolute lg:left-1/2 lg:top-[calc(100%-100svh+4rem)] lg:-translate-x-1/2"
-              : "lg:relative"
-        }`}
-      >
+      <div className="section-shell relative z-10 lg:sticky lg:top-20 lg:flex lg:h-[calc(100svh-7rem)] lg:items-center">
         <div className="w-full">
           <div className="mx-auto max-w-3xl text-center">
             <h2 className="section-title">
@@ -247,8 +294,38 @@ export function WorkflowTimeline() {
           </div>
 
           <div className="mt-6 hidden gap-5 lg:grid lg:grid-cols-[0.76fr_1.24fr] lg:items-stretch xl:gap-6">
-            <div className="relative">
-              <div className="absolute bottom-5 left-[1.7rem] top-5 w-px bg-[linear-gradient(180deg,rgba(96,165,250,0.46),rgba(96,165,250,0.06))]" />
+            <div className="grid grid-cols-[2.25rem_1fr] gap-3">
+              <div className="pointer-events-none relative">
+                <div className="absolute bottom-7 left-1/2 top-7 w-px -translate-x-1/2">
+                  <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(96,165,250,0.08),rgba(191,219,254,0.22)_14%,rgba(96,165,250,0.1)_52%,rgba(191,219,254,0.18)_86%,rgba(96,165,250,0.06))]" />
+                  <div className="absolute inset-y-0 left-1/2 w-8 -translate-x-1/2 bg-[radial-gradient(ellipse_at_center,rgba(96,165,250,0.16),transparent_64%)] blur-md" />
+                  <motion.div
+                    className="absolute left-0 top-0 w-px bg-[linear-gradient(180deg,rgba(219,234,254,0.95),rgba(96,165,250,0.8)_42%,rgba(37,99,235,0.18))] shadow-[0_0_22px_rgba(96,165,250,0.34)]"
+                    style={{ height: railFillHeight }}
+                  />
+                  <motion.span
+                    animate={{
+                      height: railActive ? 24 : 7,
+                      opacity: railActive ? 1 : 0.78,
+                    }}
+                    className="absolute left-1/2 ml-[-0.1875rem] w-1.5 -translate-y-1/2 overflow-visible rounded-full bg-[linear-gradient(180deg,rgba(241,248,255,0.98),rgba(191,219,254,0.88)_34%,rgba(96,165,250,0.7)_72%,rgba(37,99,235,0.34))] shadow-[0_0_10px_rgba(191,219,254,0.76),0_0_24px_rgba(96,165,250,0.44),0_0_48px_rgba(37,99,235,0.22)]"
+                    transition={{ duration: reduceMotion ? 0 : 0.24, ease: "easeOut" }}
+                    style={{
+                      top: railBubbleTop,
+                      scaleX: reduceMotion ? 1 : markerScaleX,
+                      scaleY: reduceMotion ? 1 : markerScaleY,
+                      transformPerspective: 700,
+                    }}
+                  >
+                    <motion.span
+                      className="absolute left-1/2 top-1/2 h-12 w-12 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(circle,rgba(219,234,254,0.44)_0%,rgba(96,165,250,0.24)_34%,rgba(37,99,235,0.08)_58%,transparent_72%)] blur-md"
+                      style={{ opacity: reduceMotion ? 0.28 : markerGlowOpacity }}
+                    />
+                    <span className="absolute inset-x-[1px] inset-y-[1px] rounded-full bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(219,234,254,0.52)_42%,rgba(96,165,250,0.1))]" />
+                    <span className="absolute left-1/2 top-1/2 h-[calc(100%+0.45rem)] w-px -translate-x-1/2 -translate-y-1/2 rounded-full bg-[linear-gradient(180deg,transparent,rgba(255,255,255,0.92)_44%,rgba(147,197,253,0.84)_56%,transparent)]" />
+                  </motion.span>
+                </div>
+              </div>
               <div className="space-y-2.5">
                 {steps.map((step, index) => (
                   <WorkflowStepButton

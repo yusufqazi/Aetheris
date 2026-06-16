@@ -4,11 +4,11 @@ import { ArrowRight } from "lucide-react";
 import { BrandMark } from "@/components/BrandMark";
 import { AnimatedAgentPanel } from "@/components/landing/AnimatedAgentPanel";
 import { ArchitectureDiagram } from "@/components/landing/ArchitectureDiagram";
-import { DebateConsensusShowcase } from "@/components/landing/DebateConsensusShowcase";
 import { FinalCta } from "@/components/landing/FinalCta";
 import { LandingNavbar } from "@/components/landing/LandingNavbar";
 import { MultiAgentAnalysis } from "@/components/landing/MultiAgentAnalysis";
 import { ReportPreview } from "@/components/landing/ReportPreview";
+import { TrustPrinciples } from "@/components/landing/TrustPrinciples";
 import { WorkflowTimeline } from "@/components/landing/WorkflowTimeline";
 import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
 
@@ -20,10 +20,15 @@ export default function Home() {
       <LandingNavbar />
 
       <main className="relative z-10 overflow-x-clip pb-6">
-        <section className="relative isolate px-4 pt-6 lg:pt-5">
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(96,165,250,0.3),transparent)]" />
-          <div className="section-shell relative">
-            <div className="grid gap-8 lg:h-[min(640px,calc(100svh-8rem))] lg:min-h-[540px] lg:grid-cols-[0.95fr_1.05fr] lg:items-center xl:gap-12">
+        <section
+          className="relative isolate -mb-px overflow-hidden bg-[#071a31] px-4 pt-6 lg:pt-5"
+          id="platform"
+        >
+          <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_20%_18%,rgba(37,99,235,0.2),transparent_34%),radial-gradient(circle_at_82%_28%,rgba(30,64,175,0.18),transparent_34%),linear-gradient(180deg,#071a31_0%,#08192f_58%,#061426_100%)]" />
+          <div className="pointer-events-none absolute inset-x-0 bottom-[-1px] z-0 h-48 bg-[linear-gradient(180deg,transparent,#061426_82%)]" />
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-px bg-[linear-gradient(90deg,transparent,rgba(96,165,250,0.3),transparent)]" />
+          <div className="section-shell relative z-10">
+            <div className="grid gap-8 lg:h-[calc(100svh-5.75rem)] lg:min-h-[620px] lg:max-h-[760px] lg:grid-cols-[0.95fr_1.05fr] lg:items-center xl:gap-12">
               <div className="max-w-[35rem] py-3 lg:py-0">
                 <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--panel)] px-3.5 py-2 text-sm font-medium text-[var(--text-primary)] shadow-[var(--shadow-sm)] backdrop-blur-xl">
                   <BrandMark className="h-5 w-5 rounded-full bg-[rgba(15,23,42,0.3)]" />
@@ -66,8 +71,8 @@ export default function Home() {
 
         <WorkflowTimeline />
         <MultiAgentAnalysis />
-        <DebateConsensusShowcase />
         <ReportPreview disclaimer={RESEARCH_DISCLAIMER} />
+        <TrustPrinciples />
         <ArchitectureDiagram />
         <FinalCta />
 

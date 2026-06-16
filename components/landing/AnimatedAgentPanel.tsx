@@ -40,7 +40,7 @@ export function AnimatedAgentPanel() {
       initial={{ opacity: 0, y: 18 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.75, ease: "easeOut" }}
-      className="relative h-[430px] overflow-hidden rounded-[2rem] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.94),rgba(7,17,31,0.98)_48%,rgba(10,28,48,0.94))] shadow-[0_34px_120px_rgba(2,6,23,0.46)] backdrop-blur-2xl sm:h-[470px] lg:h-full lg:min-h-[500px]"
+      className="relative mx-auto h-[390px] w-full max-w-[44rem] overflow-hidden rounded-[2rem] border border-white/10 bg-[linear-gradient(145deg,rgba(15,23,42,0.94),rgba(7,17,31,0.98)_48%,rgba(10,28,48,0.94))] shadow-[0_34px_120px_rgba(2,6,23,0.46)] backdrop-blur-2xl sm:h-[430px] lg:h-[min(500px,calc(100svh-12rem))] lg:min-h-[420px] xl:h-[min(530px,calc(100svh-11rem))]"
       style={{ perspective: "1200px" }}
     >
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(120deg,rgba(96,165,250,0.16),transparent_38%),linear-gradient(250deg,rgba(125,211,252,0.1),transparent_44%)]" />

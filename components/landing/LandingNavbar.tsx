@@ -12,7 +12,6 @@ const links = [
   { href: "#platform", label: "Platform" },
   { href: "#workflow", label: "Workflow" },
   { href: "#agents", label: "Agents" },
-  { href: "#consensus", label: "Consensus" },
   { href: "#demo", label: "Demo" },
 ];
 
