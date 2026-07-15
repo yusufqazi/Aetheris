@@ -3,7 +3,6 @@ import { ArrowRight } from "lucide-react";
 
 import { BrandMark } from "@/components/BrandMark";
 import { AnimatedAgentPanel } from "@/components/landing/AnimatedAgentPanel";
-import { ArchitectureDiagram } from "@/components/landing/ArchitectureDiagram";
 import { FinalCta } from "@/components/landing/FinalCta";
 import { LandingNavbar } from "@/components/landing/LandingNavbar";
 import { MultiAgentAnalysis } from "@/components/landing/MultiAgentAnalysis";
@@ -73,7 +72,6 @@ export default function Home() {
         <MultiAgentAnalysis />
         <ReportPreview disclaimer={RESEARCH_DISCLAIMER} />
         <TrustPrinciples />
-        <ArchitectureDiagram />
         <FinalCta />
 
         <footer className="section-shell px-4 pb-10">

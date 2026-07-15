@@ -44,7 +44,7 @@ const comparisons: Comparison[] = [
   },
   {
     traditional: "One reasoning path",
-    aetheris: "Multiple specialist perspectives contribute before conclusions are generated",
+    aetheris: "Multiple specialist perspectives shape the conclusion",
     icon: GitBranch,
   },
 ];
@@ -82,9 +82,9 @@ export function TrustPrinciples() {
   return (
     <section
       ref={sectionRef}
-      className="relative isolate -mt-px overflow-x-clip bg-[#020711] px-4 py-24 sm:py-28 lg:h-[360vh] lg:py-0"
+      className="relative isolate -mt-px overflow-x-clip bg-[#020610] px-4 py-24 sm:py-28 lg:h-[360vh] lg:py-0"
     >
-      <div className="pointer-events-none absolute inset-0 z-0 bg-[linear-gradient(180deg,#020711_0%,#061426_48%,#020711_100%)]" />
+      <div className="pointer-events-none absolute inset-0 z-0 bg-[linear-gradient(180deg,#020610_0%,#020610_20%,#061426_48%,#020711_76%,#020711_100%)]" />
       <motion.div
         aria-hidden="true"
         className="pointer-events-none absolute left-[-14%] top-[14%] z-0 h-[42rem] w-[42rem] rounded-full bg-[radial-gradient(circle,rgba(37,99,235,0.26),rgba(30,64,175,0.12)_42%,transparent_72%)] blur-3xl"
