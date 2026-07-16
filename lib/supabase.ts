@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 
+import { normalizeResearchSession } from "@/lib/research/session";
 import type { ResearchSession } from "@/lib/types";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -42,6 +43,14 @@ export async function saveSessionToSupabase(session: ResearchSession) {
       mode: session.mode,
       selected_agents: session.selectedAgents,
       documents: session.documents,
+      pipeline: session.pipeline,
+      events: session.events,
+      agent_executions: session.agentExecutions,
+      evidence: session.evidence,
+      report_sections: session.reportSections,
+      metrics: session.metrics,
+      confidence: session.confidence,
+      error: session.error,
       results: session.results,
       created_at: session.createdAt,
       updated_at: session.updatedAt,
@@ -80,16 +89,39 @@ export async function fetchSessionByIdFromSupabase(id: string) {
   return data ? mapSessionRow(data) : null;
 }
 
+export async function deleteSessionFromSupabase(id: string) {
+  const supabase = createAdminClient();
+  if (!supabase) {
+    return null;
+  }
+
+  return supabase.from("research_sessions").delete().eq("id", id);
+}
+
 function mapSessionRow(row: Record<string, unknown>): ResearchSession {
-  return {
+  const normalized = normalizeResearchSession({
     id: String(row.id),
     question: String(row.question),
     status: row.status as ResearchSession["status"],
     mode: row.mode as ResearchSession["mode"],
     selectedAgents: (row.selected_agents as ResearchSession["selectedAgents"]) ?? [],
     documents: (row.documents as ResearchSession["documents"]) ?? [],
+    pipeline: row.pipeline as ResearchSession["pipeline"],
+    events: row.events as ResearchSession["events"],
+    agentExecutions: row.agent_executions as ResearchSession["agentExecutions"],
+    evidence: row.evidence as ResearchSession["evidence"],
+    reportSections: row.report_sections as ResearchSession["reportSections"],
+    metrics: row.metrics as ResearchSession["metrics"],
+    confidence: row.confidence as ResearchSession["confidence"],
+    error: row.error as ResearchSession["error"],
     results: row.results as ResearchSession["results"],
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
-  };
+  });
+
+  if (!normalized) {
+    throw new Error(`Invalid research session row: ${String(row.id)}`);
+  }
+
+  return normalized;
 }

@@ -8,7 +8,14 @@ import type {
   ReportOutput,
   TrialSummarizerAgentOutput,
 } from "@/lib/types";
-import { defaultWarnings } from "@/lib/agents/shared";
+import { defaultWarnings, type FallbackObserver } from "@/lib/agents/shared";
+import { buildGroundedReport, isConcreteReport } from "@/lib/research/grounding";
+import {
+  isResearchIntelligenceGrounded,
+  sanitizeResearchIntelligence,
+} from "@/lib/research/intelligence";
+import { reportOutputSchema } from "@/lib/research/schemas";
+import type { EvidenceItem, GroundedFact } from "@/lib/types";
 
 export async function runReportAgent(payload: {
   question: string;
@@ -17,70 +24,90 @@ export async function runReportAgent(payload: {
   adverse: AdverseReactionAgentOutput;
   trial: TrialSummarizerAgentOutput;
   debate: DebateConsensusOutput;
+  facts: GroundedFact[];
+  evidence: EvidenceItem[];
+  onFallback?: FallbackObserver;
 }) {
-  const { question, literature, drug, adverse, trial, debate } = payload;
-
-  return runStructuredGeneration<ReportOutput>({
-    system: getAgentPrompt("report-generation"),
-    user: JSON.stringify(payload),
-    fallback: () => {
-      const keyFindings = [
-        literature.summary,
-        drug.summary,
-        adverse.summary,
-        debate.finalConsensus,
-      ];
-
-      const markdownReport = `# Aetheris Research Brief
-
-## Executive Summary
-${debate.finalConsensus}
-
-## Key Findings
-${keyFindings.map((finding) => `- ${finding}`).join("\n")}
-
-## Physician-Style Briefing
-${trial.summary}
-
-## Patient-Friendly Summary
-${adverse.summary}
-
-## Risks and Uncertainties
-${debate.missingEvidence.map((item) => `- ${item}`).join("\n")}
-
-## Disclaimer
-${RESEARCH_DISCLAIMER}`;
-
-      return {
-        agentName: "Report Generation Agent",
-        summary: "Combined the specialized agent outputs into a single structured report.",
-        confidence: "medium",
-        limitations: ["This report should be reviewed against the original PDFs before distribution."],
-        warnings: defaultWarnings(),
-        evidence: literature.evidence.slice(0, 4),
-        executiveSummary: debate.finalConsensus,
-        keyFindings,
-        evidenceTable: [
-          {
-            topic: "Retrieved evidence",
-            finding: literature.topRelevantExcerpts[0]?.excerpt ?? "No excerpt available",
-            supportingSource: literature.topRelevantExcerpts[0]
-              ? `${literature.topRelevantExcerpts[0].documentName} p.${literature.topRelevantExcerpts[0].page ?? "n/a"}`
-              : "Uploaded documents",
-            confidence: literature.confidence,
-          },
-        ],
-        risksAndUncertainties: debate.missingEvidence,
-        recommendedFollowUpQuestions: [
-          `What additional evidence is needed to answer: ${question}?`,
-          "Would regulatory labeling or supplementary appendices change the conclusion?",
-        ],
-        researchDisclaimer: RESEARCH_DISCLAIMER,
-        physicianBriefing: `${trial.summary} ${drug.summary}`,
-        patientFriendlySummary:
-          "This summary highlights what the uploaded documents say about benefits and risks in simpler language, but it should not be treated as personal medical advice.",
-        markdownReport,
-      };
+  const { question, facts, evidence, onFallback } = payload;
+  const groundedReport = buildGroundedReport({ question, facts, evidence });
+  const modelPayload = {
+    question,
+    groundedFacts: facts,
+    sourcePassages: evidence.map((item) => ({
+      evidenceId: item.id,
+      chunkId: item.chunkId,
+      document: item.documentName,
+      page: item.page,
+      excerpt: item.excerpt,
+      relevance: item.relevance,
+    })),
+    specialists: {
+      literature: {
+        summary: payload.literature.summary,
+        excerpts: payload.literature.topRelevantExcerpts,
+      },
+      drugInteractions: {
+        summary: payload.drug.summary,
+        findings: payload.drug.findings,
+      },
+      adverseReactions: {
+        summary: payload.adverse.summary,
+        findings: payload.adverse.findings,
+      },
+      clinicalContext: {
+        summary: payload.trial.summary,
+        findings: payload.trial.findings,
+      },
+      consensus: {
+        summary: payload.debate.summary,
+        agreements: payload.debate.agreements,
+        disagreements: payload.debate.disagreements,
+        missingEvidence: payload.debate.missingEvidence,
+        finalConsensus: payload.debate.finalConsensus,
+      },
     },
+  };
+
+  const generated = await runStructuredGeneration<ReportOutput>({
+    system: getAgentPrompt("report-generation"),
+    user: JSON.stringify(modelPayload),
+    schema: reportOutputSchema,
+    schemaName: "report_generation_output",
+    qualityCheck: (output) =>
+      isConcreteReport({ ...output, evidence }, facts, question) &&
+      isResearchIntelligenceGrounded(output.researchIntelligence, evidence),
+    onFallback,
+    fallback: () => groundedReport,
   });
+
+  const synthesizedReport = generated === groundedReport
+    ? groundedReport
+    : buildGroundedReport({
+        question,
+        facts,
+        evidence,
+        executiveSummaryOverride: generated.executiveSummary,
+      });
+  const researchIntelligence = generated === groundedReport
+    ? undefined
+    : sanitizeResearchIntelligence(generated.researchIntelligence, evidence);
+
+  return {
+    ...generated,
+    summary: synthesizedReport.summary,
+    confidence: synthesizedReport.confidence,
+    limitations: synthesizedReport.limitations,
+    warnings: defaultWarnings(),
+    evidence: synthesizedReport.evidence,
+    executiveSummary: synthesizedReport.executiveSummary,
+    keyFindings: synthesizedReport.keyFindings,
+    evidenceTable: synthesizedReport.evidenceTable,
+    risksAndUncertainties: synthesizedReport.risksAndUncertainties,
+    recommendedFollowUpQuestions: synthesizedReport.recommendedFollowUpQuestions,
+    researchDisclaimer: RESEARCH_DISCLAIMER,
+    physicianBriefing: "",
+    patientFriendlySummary: "",
+    markdownReport: synthesizedReport.markdownReport,
+    researchIntelligence,
+  };
 }

@@ -1,217 +1,260 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { Beaker, BrainCircuit, FileSearch, FlaskConical, ShieldAlert, Stethoscope } from "lucide-react";
-import type { ReactNode } from "react";
-import { useMemo, useState, useTransition } from "react";
+import { nanoid } from "nanoid";
+import { ArrowRight, CheckCircle2, FileSearch, Quote, Sparkles } from "lucide-react";
+import { useEffect, useState } from "react";
 
-import { DashboardShell } from "@/components/DashboardShell";
 import { FileUploader } from "@/components/FileUploader";
-import { saveLocalSession } from "@/lib/session-store";
-import { AGENT_IDS, type AgentId, type ResearchSession, type UploadedDocument } from "@/lib/types";
+import { WorkspacePageHeader } from "@/components/workspace/WorkspacePageHeader";
+import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
+import { makeDemoDocuments } from "@/lib/demo-data";
+import { applyResearchEvent, createResearchSession } from "@/lib/research/session";
+import { AGENT_IDS, type ResearchEvent, type UploadedDocument } from "@/lib/types";
 
-const AGENT_META: Array<{ id: AgentId; label: string; description: string; icon: ReactNode }> = [
+const QUESTION_PRESETS = [
+  "Summarize the efficacy, safety findings, and limitations of this treatment.",
+  "Which conclusions are strongly supported, and what evidence is missing?",
+  "Compare the reported outcomes and adverse events across these documents.",
+];
+
+const OUTPUT_PROMISES = [
   {
-    id: "literature-search",
-    label: "Literature Search",
-    description: "Semantic-style retrieval across the uploaded source set.",
-    icon: <FileSearch className="h-5 w-5" />,
+    icon: <FileSearch className="h-4 w-4" />,
+    title: "Concrete findings",
+    body: "Reported outcomes, safety signals, study design, and limitations without generic filler.",
   },
   {
-    id: "drug-interaction",
-    label: "Drug Interaction",
-    description: "Flags possible co-administration concerns and severity.",
-    icon: <FlaskConical className="h-5 w-5" />,
+    icon: <Quote className="h-4 w-4" />,
+    title: "Evidence attached",
+    body: "Every important claim links to the exact document passage and page that supports it.",
   },
   {
-    id: "adverse-reaction",
-    label: "Adverse Reaction",
-    description: "Extracts safety signals, warnings, and contraindications.",
-    icon: <ShieldAlert className="h-5 w-5" />,
-  },
-  {
-    id: "trial-summarizer",
-    label: "Trial Summarizer",
-    description: "Condenses design, endpoints, findings, and limitations.",
-    icon: <Beaker className="h-5 w-5" />,
-  },
-  {
-    id: "debate-consensus",
-    label: "Debate / Consensus",
-    description: "Identifies agent agreement, disagreement, and uncertainty.",
-    icon: <BrainCircuit className="h-5 w-5" />,
-  },
-  {
-    id: "report-generation",
-    label: "Report Generator",
-    description: "Produces the physician-style and patient-friendly briefings.",
-    icon: <Stethoscope className="h-5 w-5" />,
+    icon: <CheckCircle2 className="h-4 w-4" />,
+    title: "Six focused reviews",
+    body: "Retrieval, interactions, adverse reactions, clinical context, consensus, and report assembly remain visible.",
   },
 ];
 
+type AnalysisCapability = {
+  mode: "live" | "demo";
+  label: string;
+  description: string;
+  provider?: "google" | "openai" | null;
+  model?: string | null;
+  embeddingModel?: string | null;
+};
+
 export function NewResearchClient() {
-  const router = useRouter();
+  const { setActiveSessionId, startAnalysis } = useWorkspace();
+  const [sessionId] = useState(() => nanoid());
   const [documents, setDocuments] = useState<UploadedDocument[]>([]);
-  const [question, setQuestion] = useState(
-    "Compare adverse event profiles across these studies.",
-  );
-  const [selectedAgents, setSelectedAgents] = useState<AgentId[]>([...AGENT_IDS]);
+  const [uploadEvents, setUploadEvents] = useState<ResearchEvent[]>([]);
+  const [question, setQuestion] = useState(QUESTION_PRESETS[0]);
   const [error, setError] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const [isStarting, setIsStarting] = useState(false);
+  const [capability, setCapability] = useState<AnalysisCapability | null>(null);
+
+  useEffect(() => {
+    setActiveSessionId(null);
+  }, [setActiveSessionId]);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/analyze", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((value: AnalysisCapability) => {
+        if (active) setCapability(value);
+      })
+      .catch(() => {
+        if (active) {
+          setCapability({
+            mode: "demo",
+            label: "Analysis mode unavailable",
+            description: "Aetheris could not confirm whether model-assisted analysis is configured.",
+          });
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const canRun = question.trim().length > 6 && documents.length > 0;
-  const selectedCountLabel = useMemo(
-    () => `${selectedAgents.length} of ${AGENT_IDS.length} agents enabled`,
-    [selectedAgents.length],
-  );
 
-  function toggleAgent(agentId: AgentId) {
-    setSelectedAgents((current) =>
-      current.includes(agentId)
-        ? current.filter((item) => item !== agentId)
-        : [...current, agentId],
+  function addUploadEvent(event: ResearchEvent) {
+    setUploadEvents((current) =>
+      current.some((item) => item.id === event.id) ? current : [...current, event],
     );
   }
 
-  function runAnalysis() {
-    if (!canRun) {
-      setError("Add at least one PDF and a research question before starting analysis.");
+  function loadExampleSources() {
+    setDocuments(makeDemoDocuments());
+    setUploadEvents([]);
+    setError(null);
+  }
+
+  async function runAnalysis() {
+    if (!canRun || isStarting) {
+      setError("Add at least one prepared PDF and ask a focused research question.");
       return;
     }
 
     setError(null);
-
-    startTransition(async () => {
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          question,
-          selectedAgents,
-          documents,
-        }),
-      });
-
-      if (!response.ok) {
-        setError("The analysis pipeline did not complete. Please try again.");
-        return;
-      }
-
-      const session = (await response.json()) as ResearchSession;
-      saveLocalSession(session);
-      router.push(`/research/${session.id}`);
+    setIsStarting(true);
+    let session = createResearchSession({
+      id: sessionId,
+      question: question.trim(),
+      selectedAgents: [...AGENT_IDS],
+      documents,
+      mode: capability?.mode ?? "demo",
     });
+
+    for (const event of uploadEvents) {
+      session = applyResearchEvent(session, event);
+    }
+    session = {
+      ...session,
+      question: question.trim(),
+      documents,
+      metrics: {
+        ...session.metrics,
+        documentCount: documents.length,
+        pageCount: documents.reduce((sum, document) => sum + document.pageCount, 0),
+      },
+    };
+
+    try {
+      await startAnalysis(session);
+    } finally {
+      setIsStarting(false);
+    }
   }
 
   return (
-    <DashboardShell
-      title="New Research Session"
-      description="Upload the primary PDFs, define the research objective, and launch the multi-agent workflow. If API credentials are not configured, Aetheris falls back to a polished demo mode so the experience stays usable."
-    >
-      <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-        <div className="space-y-6">
-          <FileUploader documents={documents} onDocumentsChange={setDocuments} />
+    <div className="mx-auto w-full max-w-[82rem] px-5 py-8 sm:px-8 lg:px-12 lg:py-12">
+      <WorkspacePageHeader
+        eyebrow="New evidence brief"
+        title="What do you need to know?"
+        description="Add the source documents and ask one focused clinical research question. Aetheris will return a concise answer that can be checked against the original evidence."
+      />
 
-          <div className="glass-panel rounded-[2rem] p-6">
-            <label className="font-semibold text-[var(--text-primary)]">
-              Research question
-            </label>
+      <div className="mt-10 grid gap-10 xl:grid-cols-[minmax(0,1.15fr)_minmax(22rem,0.65fr)] xl:items-start">
+        <div className="space-y-10">
+          <section>
+            <SectionHeading index="01" title="Add source documents" detail={`${documents.length} ready`} />
+            <div className="mt-4">
+              <FileUploader
+                sessionId={sessionId}
+                documents={documents}
+                onDocumentsChange={setDocuments}
+                onEvent={addUploadEvent}
+              />
+            </div>
+            {documents.length === 0 ? (
+              <button
+                type="button"
+                onClick={loadExampleSources}
+                className="mt-4 inline-flex items-center gap-2 text-xs text-slate-500 transition hover:text-sky-300"
+              >
+                <Sparkles className="h-3.5 w-3.5 text-sky-400" />
+                Try Aetheris with example clinical documents
+              </button>
+            ) : null}
+          </section>
+
+          <section>
+            <SectionHeading index="02" title="Ask one focused question" detail="Required" />
             <textarea
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
               rows={5}
-              className="mt-4 w-full rounded-[1.5rem] border border-[var(--border)] bg-[var(--panel-strong)] px-4 py-4 text-sm leading-7 text-[var(--text-primary)] outline-none transition focus:border-[var(--accent)]"
+              className="mt-4 w-full resize-y rounded-[1.4rem] border border-white/[0.09] bg-white/[0.025] px-5 py-5 text-base leading-7 text-slate-100 outline-none transition placeholder:text-slate-700 focus:border-sky-300/30 focus:bg-sky-400/[0.025] focus:shadow-[0_0_0_4px_rgba(56,189,248,0.035)]"
+              aria-label="Research question"
+              placeholder="What should Aetheris determine from these documents?"
             />
-            <div className="mt-4 flex flex-wrap gap-2">
-              {[
-                "Compare adverse event profiles across these studies.",
-                "Summarize contraindications mentioned in these documents.",
-                "Generate a physician-style briefing.",
-                "Generate a patient-friendly summary.",
-              ].map((preset) => (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {QUESTION_PRESETS.map((preset) => (
                 <button
                   key={preset}
                   type="button"
                   onClick={() => setQuestion(preset)}
-                  className="rounded-full border border-[var(--border)] bg-[var(--panel-strong)] px-3 py-2 text-xs text-[var(--text-secondary)] transition hover:bg-[var(--panel-muted)]"
+                  className="rounded-full border border-white/[0.07] px-3 py-2 text-left text-[10px] text-slate-600 transition hover:border-white/[0.13] hover:text-slate-300"
                 >
                   {preset}
                 </button>
               ))}
             </div>
-          </div>
+          </section>
         </div>
 
-        <div className="space-y-6">
-          <div className="glass-panel rounded-[2rem] p-6">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <h3 className="text-xl font-semibold">Agent lineup</h3>
-                <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                  {selectedCountLabel}
-                </p>
+        <aside className="rounded-[1.5rem] border border-white/[0.08] bg-[linear-gradient(150deg,rgba(37,99,235,0.1),rgba(255,255,255,0.02)_46%,rgba(2,6,23,0.08))] p-6 xl:sticky xl:top-10">
+          <p className="font-mono text-[9px] uppercase tracking-[0.24em] text-sky-400">What you will get</p>
+          <div className="mt-5 divide-y divide-white/[0.07]">
+            {OUTPUT_PROMISES.map((item) => (
+              <div key={item.title} className="flex gap-4 py-4 first:pt-0 last:pb-0">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[0.75rem] border border-sky-300/15 bg-sky-400/[0.07] text-sky-300">
+                  {item.icon}
+                </span>
+                <div>
+                  <h2 className="text-sm font-medium text-slate-200">{item.title}</h2>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">{item.body}</p>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setSelectedAgents([...AGENT_IDS])}
-                className="rounded-full bg-[var(--panel-muted)] px-3 py-2 text-xs font-semibold text-[var(--text-secondary)]"
-              >
-                Reset
-              </button>
-            </div>
-
-            <div className="mt-5 space-y-3">
-              {AGENT_META.map((agent) => {
-                const active = selectedAgents.includes(agent.id);
-                return (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    onClick={() => toggleAgent(agent.id)}
-                    className={`w-full rounded-[1.5rem] border p-4 text-left transition ${
-                      active
-                        ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                        : "border-[var(--border)] bg-[var(--panel-strong)] hover:bg-[var(--panel-muted)]"
-                    }`}
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className="mt-1 text-[var(--navy)]">{agent.icon}</div>
-                      <div>
-                        <div className="flex items-center gap-3">
-                          <p className="font-semibold">{agent.label}</p>
-                          <span className="rounded-full bg-[var(--panel)] px-2 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--text-muted)]">
-                            {active ? "Enabled" : "Off"}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
-                          {agent.description}
-                        </p>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+            ))}
           </div>
 
-          <div className="glass-panel rounded-[2rem] p-6">
-            <h3 className="text-xl font-semibold">Run workflow</h3>
-            <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-              The pipeline extracts text, ranks relevant chunks, fans out specialized agent
-              reasoning, then assembles a final consensus report with visible evidence.
+          <dl className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-[0.9rem] border border-white/[0.07] bg-white/[0.07]">
+            <ReadinessMetric label="Sources" value={String(documents.length)} />
+            <ReadinessMetric label="Pages" value={String(documents.reduce((sum, item) => sum + item.pageCount, 0))} />
+          </dl>
+
+          <div className={`mt-4 rounded-[0.9rem] border px-4 py-3 ${capability?.mode === "live" ? "border-emerald-300/15 bg-emerald-300/[0.035]" : "border-sky-300/15 bg-sky-400/[0.04]"}`}>
+            <p className={`font-mono text-[8px] uppercase tracking-[0.18em] ${capability?.mode === "live" ? "text-emerald-300/80" : "text-sky-300/80"}`}>
+              {capability?.label ?? "Checking analysis mode"}
             </p>
-            <button
-              type="button"
-              onClick={runAnalysis}
-              className="mt-5 w-full rounded-full bg-[var(--navy)] px-5 py-4 text-sm font-semibold text-white transition hover:bg-[#0f2740] disabled:cursor-not-allowed disabled:opacity-55"
-              disabled={!canRun || isPending}
-            >
-              {isPending ? "Running multi-agent analysis..." : "Run analysis"}
-            </button>
-            {error ? <p className="mt-3 text-sm text-[var(--danger)]">{error}</p> : null}
+            <p className="mt-1 text-[10px] leading-5 text-slate-500">
+              {capability?.description ?? "Aetheris is checking which research engine is available before this run begins."}
+            </p>
           </div>
-        </div>
+
+          <button
+            type="button"
+            onClick={() => void runAnalysis()}
+            disabled={!canRun || isStarting}
+            className="group mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[linear-gradient(135deg,#1d4ed8,#60a5fa)] px-5 text-sm font-semibold text-white shadow-[0_18px_52px_rgba(37,99,235,0.28)] transition duration-300 hover:-translate-y-px hover:shadow-[0_22px_60px_rgba(37,99,235,0.4)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
+          >
+            {isStarting
+              ? capability?.mode === "live" ? "Running six-agent analysis..." : "Extracting evidence locally..."
+              : capability?.mode === "live" ? "Run six-agent analysis" : "Extract evidence locally"}
+            <ArrowRight className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-0.5" />
+          </button>
+          <p className="mt-3 text-center text-[10px] leading-5 text-slate-700">
+            Research support only. Important conclusions should be independently reviewed.
+          </p>
+          {error ? <p className="mt-3 text-xs leading-5 text-amber-200/70">{error}</p> : null}
+        </aside>
       </div>
-    </DashboardShell>
+    </div>
+  );
+}
+
+function SectionHeading({ index, title, detail }: { index: string; title: string; detail: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div className="flex items-center gap-3">
+        <span className="font-mono text-[9px] text-sky-400">{index}</span>
+        <h2 className="text-sm font-semibold text-slate-200">{title}</h2>
+      </div>
+      <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-slate-700">{detail}</span>
+    </div>
+  );
+}
+
+function ReadinessMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-[#07111f]/80 px-3 py-3 text-center">
+      <dt className="font-mono text-[8px] uppercase tracking-[0.16em] text-slate-700">{label}</dt>
+      <dd className="mt-1 text-sm font-medium text-slate-300">{value}</dd>
+    </div>
   );
 }

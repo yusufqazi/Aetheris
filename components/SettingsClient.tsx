@@ -1,77 +1,66 @@
-"use client";
+import { CheckCircle2, Database, ShieldCheck, Sparkles } from "lucide-react";
 
-import type { ReactNode } from "react";
-import { DashboardShell } from "@/components/DashboardShell";
+import { WorkspacePageHeader } from "@/components/workspace/WorkspacePageHeader";
 import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
 
+const SYSTEM_ROWS = [
+  {
+    icon: Sparkles,
+    label: "Generation",
+    value: "Google Gemini or OpenAI structured analysis with an explicitly labeled local fallback",
+  },
+  {
+    icon: Database,
+    label: "Persistence",
+    value: "IndexedDB locally with optional Supabase checkpoints",
+  },
+  {
+    icon: ShieldCheck,
+    label: "Research boundary",
+    value: "Evidence support only; never clinical decision-making",
+  },
+];
+
 export function SettingsClient() {
-  const envRows = [
-    "OPENAI_API_KEY",
-    "OPENAI_MODEL",
-    "NEXT_PUBLIC_SUPABASE_URL",
-    "NEXT_PUBLIC_SUPABASE_ANON_KEY",
-    "SUPABASE_SERVICE_ROLE_KEY",
-  ];
-
   return (
-    <DashboardShell
-      title="Settings & About"
-      description="Aetheris is an educational SaaS-style reference workspace for structured pharma document analysis. This page documents the stack, architecture, and the guardrails that keep the product framed as research support rather than clinical advice."
-    >
-      <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-        <div className="space-y-6">
-          <InfoPanel title="Research-use disclaimer">
-            <p className="text-sm leading-7 text-[var(--text-secondary)]">{RESEARCH_DISCLAIMER}</p>
-          </InfoPanel>
+    <div className="mx-auto w-full max-w-[100rem] px-5 py-8 sm:px-8 lg:px-10 lg:py-10">
+      <WorkspacePageHeader
+        eyebrow="System configuration"
+        title="Research settings and guardrails."
+        description="A concise view of the runtime, persistence path, and safety boundary governing this workspace."
+      />
 
-          <InfoPanel title="Tech stack">
-            <div className="space-y-2 text-sm text-[var(--text-secondary)]">
-              <p>Next.js App Router with TypeScript</p>
-              <p>Tailwind CSS with a custom enterprise design system</p>
-              <p>Supabase-ready auth and research session persistence</p>
-              <p>OpenAI-backed structured generation with demo fallback</p>
-              <p>PDF text extraction and chunked retrieval workflow</p>
-            </div>
-          </InfoPanel>
-        </div>
+      <div className="mt-8 grid gap-10 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <section>
+          <p className="font-mono text-[9px] uppercase tracking-[0.24em] text-sky-400">Research-use boundary</p>
+          <p className="mt-4 max-w-xl text-lg leading-8 text-slate-300">{RESEARCH_DISCLAIMER}</p>
+          <div className="mt-6 space-y-3">
+            {[
+              "Original source review remains mandatory",
+              "Confidence describes the evidence set, not clinical validity",
+              "Uncertainty and contradictory findings stay visible",
+            ].map((item) => (
+              <div key={item} className="flex items-center gap-3 text-sm text-slate-500">
+                <CheckCircle2 className="h-4 w-4 text-emerald-400/80" />
+                {item}
+              </div>
+            ))}
+          </div>
+        </section>
 
-        <div className="space-y-6">
-          <InfoPanel title="Multi-agent architecture">
-            <div className="space-y-3 text-sm leading-7 text-[var(--text-secondary)]">
-              <p>1. PDF upload route extracts text and stores clean document payloads.</p>
-              <p>2. Retrieval ranks relevant chunks for the active research question.</p>
-              <p>3. Specialized agents analyze the same evidence from different perspectives.</p>
-              <p>4. A debate agent surfaces disagreement, uncertainty, and missing evidence.</p>
-              <p>5. A report agent assembles the final executive summary and evidence table.</p>
-            </div>
-          </InfoPanel>
-
-          <InfoPanel title="Environment variables">
-            <div className="space-y-2 font-mono text-xs text-[var(--text-secondary)]">
-              {envRows.map((item) => (
-                <p key={item} className="rounded-2xl bg-[var(--panel-muted)] px-3 py-2">
-                  {item}
-                </p>
-              ))}
-            </div>
-          </InfoPanel>
-        </div>
+        <section className="divide-y divide-white/[0.07] border-y border-white/[0.07]">
+          {SYSTEM_ROWS.map((row) => {
+            const Icon = row.icon;
+            return (
+              <div key={row.label} className="grid gap-3 py-5 sm:grid-cols-[auto_10rem_minmax(0,1fr)] sm:items-center">
+                <Icon className="h-4 w-4 text-sky-400" />
+                <p className="text-sm font-medium text-slate-300">{row.label}</p>
+                <p className="text-sm leading-6 text-slate-600">{row.value}</p>
+              </div>
+            );
+          })}
+        </section>
       </div>
-    </DashboardShell>
-  );
-}
-
-function InfoPanel({
-  title,
-  children,
-}: {
-  title: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className="glass-panel rounded-[2rem] p-6">
-      <h3 className="text-xl font-semibold">{title}</h3>
-      <div className="mt-4">{children}</div>
-    </section>
+    </div>
   );
 }

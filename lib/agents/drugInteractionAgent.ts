@@ -1,50 +1,77 @@
 import { getAgentPrompt } from "@/lib/prompts";
 import { runStructuredGeneration } from "@/lib/llm";
 import type { DrugInteractionAgentOutput, SearchChunk } from "@/lib/types";
-import { asEvidence, defaultWarnings, pickSentences } from "@/lib/agents/shared";
+import {
+  asEvidence,
+  confidenceFromEvidence,
+  defaultWarnings,
+  groundedFactsFromChunks,
+  hasConcreteContent,
+  pickSentences,
+  type FallbackObserver,
+} from "@/lib/agents/shared";
+import { factsByCategory } from "@/lib/research/grounding";
+import { drugInteractionOutputSchema } from "@/lib/research/schemas";
 
 const SIGNAL_WORDS = ["interaction", "cyp", "inhibitor", "inducer", "coadmin", "exposure"];
 
 export async function runDrugInteractionAgent({
   question,
   chunks,
+  onFallback,
 }: {
   question: string;
   chunks: SearchChunk[];
+  onFallback?: FallbackObserver;
 }) {
   const interactionChunks = chunks.filter((chunk) =>
     SIGNAL_WORDS.some((word) => chunk.text.toLowerCase().includes(word)),
   );
+  const sourceChunks = interactionChunks.length > 0 ? interactionChunks : chunks;
+  const interactionFacts = factsByCategory(
+    groundedFactsFromChunks(sourceChunks, question),
+    "interaction",
+  );
 
   return runStructuredGeneration<DrugInteractionAgentOutput>({
     system: getAgentPrompt("drug-interaction"),
-    user: JSON.stringify({ question, chunks: interactionChunks.slice(0, 6) }),
+    user: JSON.stringify({ question, chunks: sourceChunks.slice(0, 6) }),
+    schema: drugInteractionOutputSchema,
+    schemaName: "drug_interaction_output",
+    qualityCheck: (output) => output.findings.length > 0 && hasConcreteContent(output),
+    onFallback,
     fallback: () => ({
       agentName: "Drug Interaction Agent",
-      summary:
-        interactionChunks.length > 0
-          ? "Potential interaction signals were detected in the retrieved evidence, but their severity should be treated as a research hypothesis."
-          : "No explicit interaction-heavy passages were retrieved, so interaction conclusions remain tentative.",
-      confidence: interactionChunks.length > 1 ? "medium" : "low",
+      summary: interactionFacts.length > 0
+        ? interactionFacts.slice(0, 6).map((fact) => fact.text).join(" ")
+        : "No explicit medication interaction was established in the retrieved passages.",
+      confidence: confidenceFromEvidence(interactionFacts.length, sourceChunks.length),
       limitations: [
         "This assistant cannot determine clinical significance without full labeling, mechanistic data, or expert review.",
       ],
       warnings: defaultWarnings(),
-      evidence: asEvidence(interactionChunks.length > 0 ? interactionChunks : chunks),
-      findings: [
-        {
-          possibleInteraction:
-            interactionChunks[0]
-              ? "Possible pharmacokinetic or co-administration concern referenced in the uploaded material."
-              : "No explicit drug-drug interaction was confirmed in the retrieved excerpts.",
-          severityEstimate: interactionChunks[0] ? "moderate" : "unclear",
-          uncertaintyLevel: interactionChunks[0] ? "medium" : "high",
-          notes: interactionChunks[0]
-            ? pickSentences(interactionChunks[0].text)
-            : "Further source review is needed before drawing conclusions.",
-          evidence: interactionChunks[0]?.text.slice(0, 240) ?? "No direct interaction language surfaced in the top-ranked chunks.",
-        },
-      ],
+      evidence: asEvidence(sourceChunks),
+      findings: interactionFacts.length > 0
+        ? interactionFacts.slice(0, 6).map((fact) => ({
+            possibleInteraction: fact.text,
+            severityEstimate: /clinically relevant|high priority|most important/i.test(fact.text)
+              ? "high"
+              : /moderate/i.test(fact.text)
+                ? "moderate"
+                : "unclear",
+            uncertaintyLevel: /not proof|uncertain|unclear|may|possible/i.test(fact.text)
+              ? "high"
+              : "medium",
+            notes: fact.relevance,
+            evidence: fact.excerpt,
+          }))
+        : [{
+            possibleInteraction: "No explicit drug-drug interaction was confirmed in the retrieved excerpts.",
+            severityEstimate: "unclear",
+            uncertaintyLevel: "high",
+            notes: "Further source review is needed before drawing conclusions.",
+            evidence: pickSentences(sourceChunks[0]?.text ?? "No direct interaction language surfaced."),
+          }],
     }),
   });
 }

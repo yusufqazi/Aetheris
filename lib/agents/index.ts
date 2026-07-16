@@ -1,4 +1,4 @@
-import { retrieveRelevantChunks } from "@/lib/embeddings";
+import { chunksToEvidence, retrieveRelevantChunks } from "@/lib/embeddings";
 import { runAdverseReactionAgent } from "@/lib/agents/adverseReactionAgent";
 import { runDebateAgent } from "@/lib/agents/debateAgent";
 import { runDrugInteractionAgent } from "@/lib/agents/drugInteractionAgent";
@@ -6,6 +6,7 @@ import { runLiteratureSearchAgent } from "@/lib/agents/literatureSearchAgent";
 import { runReportAgent } from "@/lib/agents/reportAgent";
 import { runTrialSummarizerAgent } from "@/lib/agents/trialSummarizerAgent";
 import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
+import { extractGroundedFacts } from "@/lib/research/grounding";
 import type { AgentId, AnalysisBundle, UploadedDocument } from "@/lib/types";
 
 export async function runMultiAgentAnalysis({
@@ -17,7 +18,9 @@ export async function runMultiAgentAnalysis({
   documents: UploadedDocument[];
   selectedAgents: AgentId[];
 }) {
-  const chunks = retrieveRelevantChunks(documents, question, 10);
+  const chunks = await retrieveRelevantChunks(documents, question, 10);
+  const evidence = chunksToEvidence(chunks, "Ranked against the active research question.");
+  const facts = extractGroundedFacts(evidence, question);
 
   const literatureSearch = selectedAgents.includes("literature-search")
     ? await runLiteratureSearchAgent({ question, chunks })
@@ -96,6 +99,8 @@ export async function runMultiAgentAnalysis({
         adverse: adverseReaction,
         trial: trialSummarizer,
         debate: debateConsensus,
+        facts,
+        evidence,
       })
     : {
         agentName: "Report Generation Agent",

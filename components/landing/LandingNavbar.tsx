@@ -6,7 +6,6 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 
 import { BrandMark } from "@/components/BrandMark";
-import { ThemeToggle } from "@/components/ThemeToggle";
 
 const links = [
   { href: "#platform", label: "Platform" },
@@ -157,7 +156,6 @@ export function LandingNavbar() {
           </nav>
 
           <div className="flex items-center gap-3">
-            <ThemeToggle />
             <Link
               href="/research/new"
               className={`inline-flex items-center gap-2 rounded-full bg-[var(--accent)] px-4 text-sm font-semibold text-white shadow-[var(--shadow-glow)] transition duration-300 hover:translate-y-[-1px] hover:bg-[var(--accent-strong)] ${

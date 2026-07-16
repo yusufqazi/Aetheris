@@ -177,6 +177,40 @@ select {
   border-radius: 999px;
 }
 
+.workspace-root {
+  isolation: isolate;
+  background: #020711;
+}
+
+.workspace-atmosphere {
+  z-index: -1;
+  background:
+    radial-gradient(circle at 48% -12%, rgba(37, 99, 235, 0.2), transparent 34%),
+    radial-gradient(circle at 86% 24%, rgba(14, 116, 144, 0.09), transparent 29%),
+    radial-gradient(circle at 18% 82%, rgba(30, 64, 175, 0.08), transparent 32%),
+    linear-gradient(145deg, #020711 0%, #050d19 46%, #061426 100%);
+}
+
+.workspace-atmosphere::after {
+  content: "";
+  position: absolute;
+  inset: -18%;
+  background: radial-gradient(circle at 56% 38%, rgba(56, 189, 248, 0.045), transparent 34%);
+  animation: workspace-ambient-shift 18s ease-in-out infinite alternate;
+}
+
+@keyframes workspace-ambient-shift {
+  from {
+    transform: translate3d(-1.5%, -1%, 0) scale(0.98);
+    opacity: 0.62;
+  }
+
+  to {
+    transform: translate3d(1.5%, 1%, 0) scale(1.03);
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;

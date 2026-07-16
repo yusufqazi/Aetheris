@@ -1,33 +1,126 @@
 "use client";
 
+import { openDB, type DBSchema, type IDBPDatabase } from "idb";
+
+import { normalizeResearchSession } from "@/lib/research/session";
 import type { ResearchSession } from "@/lib/types";
 
-const STORAGE_KEY = "aetheris-sessions";
+const DATABASE_NAME = "aetheris-workspace";
+const DATABASE_VERSION = 1;
+const SESSION_STORE = "sessions";
+const LEGACY_STORAGE_KEY = "aetheris-sessions";
+const MIGRATION_KEY = "aetheris-indexeddb-migration-v1";
 
-export function loadLocalSessions() {
+interface AetherisDatabase extends DBSchema {
+  sessions: {
+    key: string;
+    value: ResearchSession;
+    indexes: { "by-updated-at": string };
+  };
+}
+
+let databasePromise: Promise<IDBPDatabase<AetherisDatabase>> | null = null;
+
+function getDatabase() {
   if (typeof window === "undefined") {
+    return null;
+  }
+
+  databasePromise ??= openDB<AetherisDatabase>(DATABASE_NAME, DATABASE_VERSION, {
+    upgrade(database) {
+      const store = database.createObjectStore(SESSION_STORE, { keyPath: "id" });
+      store.createIndex("by-updated-at", "updatedAt");
+    },
+  });
+
+  return databasePromise;
+}
+
+export async function loadLocalSessions() {
+  const database = getDatabase();
+  if (!database) {
     return [] as ResearchSession[];
   }
 
-  const raw = window.localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return [];
-  }
+  await migrateLegacySessions();
+  const values = await (await database).getAll(SESSION_STORE);
 
-  try {
-    return JSON.parse(raw) as ResearchSession[];
-  } catch {
-    return [];
-  }
+  return values
+    .map(normalizeResearchSession)
+    .filter((session): session is ResearchSession => Boolean(session))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-export function saveLocalSession(session: ResearchSession) {
-  const existing = loadLocalSessions().filter((item) => item.id !== session.id);
-  const next = [session, ...existing].slice(0, 25);
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  return next;
+export async function saveLocalSession(session: ResearchSession) {
+  const database = getDatabase();
+  if (!database) {
+    return session;
+  }
+
+  await (await database).put(SESSION_STORE, session);
+  return session;
 }
 
-export function findLocalSession(id: string) {
-  return loadLocalSessions().find((item) => item.id === id) ?? null;
+export async function saveLocalSessions(sessions: ResearchSession[]) {
+  const database = getDatabase();
+  if (!database) {
+    return sessions;
+  }
+
+  const transaction = (await database).transaction(SESSION_STORE, "readwrite");
+  await Promise.all([
+    ...sessions.map((session) => transaction.store.put(session)),
+    transaction.done,
+  ]);
+  return sessions;
+}
+
+export async function findLocalSession(id: string) {
+  const database = getDatabase();
+  if (!database) {
+    return null;
+  }
+
+  await migrateLegacySessions();
+  return normalizeResearchSession(await (await database).get(SESSION_STORE, id));
+}
+
+export async function deleteLocalSession(id: string) {
+  const database = getDatabase();
+  if (!database) {
+    return;
+  }
+
+  await (await database).delete(SESSION_STORE, id);
+}
+
+async function migrateLegacySessions() {
+  if (typeof window === "undefined" || window.localStorage.getItem(MIGRATION_KEY) === "complete") {
+    return;
+  }
+
+  const database = getDatabase();
+  if (!database) {
+    return;
+  }
+
+  const raw = window.localStorage.getItem(LEGACY_STORAGE_KEY);
+  if (raw) {
+    try {
+      const values = JSON.parse(raw) as unknown[];
+      const sessions = values
+        .map(normalizeResearchSession)
+        .filter((session): session is ResearchSession => Boolean(session));
+      const transaction = (await database).transaction(SESSION_STORE, "readwrite");
+      await Promise.all([
+        ...sessions.map((session) => transaction.store.put(session)),
+        transaction.done,
+      ]);
+      window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+    } catch {
+      // Leave malformed legacy data untouched; a future migration may still recover it.
+    }
+  }
+
+  window.localStorage.setItem(MIGRATION_KEY, "complete");
 }

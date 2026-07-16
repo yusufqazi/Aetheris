@@ -7,7 +7,8 @@ import type {
   LiteratureSearchAgentOutput,
   TrialSummarizerAgentOutput,
 } from "@/lib/types";
-import { defaultWarnings } from "@/lib/agents/shared";
+import { defaultWarnings, hasConcreteContent, type FallbackObserver } from "@/lib/agents/shared";
+import { debateConsensusOutputSchema } from "@/lib/research/schemas";
 
 export async function runDebateAgent(payload: {
   question: string;
@@ -15,27 +16,31 @@ export async function runDebateAgent(payload: {
   drug: DrugInteractionAgentOutput;
   adverse: AdverseReactionAgentOutput;
   trial: TrialSummarizerAgentOutput;
+  onFallback?: FallbackObserver;
 }) {
-  const { question, literature, drug, adverse, trial } = payload;
+  const { literature, drug, adverse, trial, onFallback } = payload;
 
   return runStructuredGeneration<DebateConsensusOutput>({
     system: getAgentPrompt("debate-consensus"),
     user: JSON.stringify(payload),
+    schema: debateConsensusOutputSchema,
+    schemaName: "debate_consensus_output",
+    qualityCheck: (output) => output.finalConsensus.trim().length > 30 && hasConcreteContent(output),
+    onFallback,
     fallback: () => ({
       agentName: "Debate / Consensus Agent",
       summary: "Compared agent outputs to surface aligned findings, open disagreements, and missing evidence.",
-      confidence: "medium",
+      confidence: trial.confidence === "high" && adverse.confidence === "high"
+        ? "high"
+        : trial.confidence === "low" && adverse.confidence === "low"
+          ? "low"
+          : "medium",
       limitations: [
         "The consensus engine synthesizes agent outputs and inherits any gaps from the underlying document retrieval.",
       ],
       warnings: defaultWarnings(),
       evidence: literature.evidence.slice(0, 3),
-      agreements: [
-        `All agents remained focused on the research question: ${question}`,
-        literature.topRelevantExcerpts.length > 0
-          ? "Evidence retrieval surfaced traceable source passages for the downstream agents."
-          : "Agents agree that retrieved evidence is sparse and conclusions should remain conservative.",
-      ],
+      agreements: [drug.summary, trial.summary, adverse.summary].filter(Boolean),
       disagreements: [
         drug.findings[0]?.severityEstimate === "moderate"
           ? "Interaction concern appears plausible, but the exact severity is not well established."
@@ -45,7 +50,7 @@ export async function runDebateAgent(payload: {
         "Source tables or appendices not fully represented in plain-text extraction",
         "External literature or regulatory context outside the uploaded PDFs",
       ],
-      finalConsensus: `${trial.summary} ${adverse.summary} The resulting conclusion should be used for research support only.`,
+      finalConsensus: `${drug.summary} ${trial.summary} ${adverse.summary}`.trim(),
     }),
   });
 }
