@@ -3,61 +3,85 @@ import type {
   EvidenceItem,
   GroundedFact,
   GroundedFactCategory,
+  ResearchContentType,
   ReportOutput,
 } from "@/lib/types";
 
-const CONCRETE_SIGNAL = /(?:\b\d+(?:\.\d+)?\s*%|\bp\s*[=<]\s*0?\.\d+|\b\d+(?:\.\d+)?\s+(?:participants?|patients?|subjects?|weeks?|months?|years?|events?|groups?|arms?|mg|g\/dL|ng\/mL|ms)\b|randomi[sz]ed|double-blind|placebo-controlled|primary endpoint|adverse events?|serious adverse|excluded|uncertain|does not prove|not establish|follow-up|larger multi-center|recommended|quality-of-life|c-reactive|\bdas\b|interaction|coadministration|\bqtc?\b|absorption|blood loss|orthostatic|hydroxychloroquine|azithromycin|propranolol|omeprazole|ibuprofen|hemoglobin|ferritin|anemia|improved|decreased|increased|normalized|risk|concern)/i;
+const CONCRETE_SIGNAL = /(?:\b\d+(?:\.\d+)?\s*%|\bp\s*[=<]\s*0?\.\d+|\b\d+(?:\.\d+)?\s+(?:participants?|patients?|subjects?|weeks?|months?|years?|events?|groups?|arms?|mg|g\/dL|ng\/mL|mmol\/L|ms)\b|\b[A-Za-z][A-Za-z /_-]{1,30}\s+\d+(?:\.\d+)?\s+(?:(?:to|→|->)\s+)?\d+(?:\.\d+)?\b|randomi[sz]ed|double-blind|placebo-controlled|primary endpoint|adverse events?|serious adverse|excluded|uncertain|does not prove|not establish|follow-up|recommended|quality-of-life|interaction|coadministration|concomitant|\bqtc?\b|absorption|blood loss|orthostatic|hemoglobin|ferritin|anemia|palpitations?|improved|decreased|increased|normalized|persisted|risk|concern|discrepancy|contradiction)/i;
 const SOURCE_INSTRUCTION = /^(?:summarize|identify|explain|assess|generate|review|compare)\b/i;
 const BOILERPLATE = /^(?:synthetic test document|testing notice|patient\s+.+\bmrn\b)/i;
 const INTERACTION_FOCUS = /\b(?:drug|medication|interaction|contraindication|harmful|coadmin)/i;
+const LEADING_LABEL = /^(?:(?:key\s+)?finding|observation|question|unresolved question|recommendation|recommended action|treatment plan|plan|priority|status|safety observation|potential (?:contradiction|conflict)|discrepancy|change|limitation|evidence)\s*[:\-]\s*/i;
+const TABLE_HEADER = /^(?:(?:medication|drug|combination|pair|measure|test|date|finding|observation|result|value|status|priority|concern|rationale|recommendation|reference|range|interpretation|source)(?:\s+|$)){2,}$/i;
 
 export function extractGroundedFacts(evidence: EvidenceItem[], question: string): GroundedFact[] {
-  const seen = new Set<string>();
+  const seen: string[] = [];
   const facts: GroundedFact[] = [];
 
   for (const item of evidence) {
-    const interactionCandidates = extractInteractionCandidates(item.excerpt);
-    const candidates = [...interactionCandidates, ...splitSourceSentences(item.excerpt)];
+    const candidates = splitSourceStatements(item.excerpt);
 
     for (let index = 0; index < candidates.length; index += 1) {
-      const excerpt = candidates[index].replace(/\s+/g, " ").trim();
+      const excerpt = candidates[index].trim();
+      const statement = excerpt.replace(/\s+/g, " ").trim();
       if (
-        excerpt.length < 18 ||
-        excerpt.length > 460 ||
-        SOURCE_INSTRUCTION.test(excerpt) ||
-        BOILERPLATE.test(excerpt) ||
-        /medication reconciliation|interaction and safety findings|patient-reported intermittent use|status key safety/i.test(excerpt) ||
-        (!interactionCandidates.includes(candidates[index]) && countMedicationMentions(excerpt) >= 2 && !excerpt.includes(" + ")) ||
-        !CONCRETE_SIGNAL.test(excerpt)
+        statement.length < 18 ||
+        statement.length > 560 ||
+        isTruncatedCandidate(excerpt, index, candidates, item) ||
+        isIncompleteStatement(statement) ||
+        isStructuralNoise(statement) ||
+        (SOURCE_INSTRUCTION.test(statement) && !CONCRETE_SIGNAL.test(statement)) ||
+        BOILERPLATE.test(statement) ||
+        !CONCRETE_SIGNAL.test(statement)
       ) {
         continue;
       }
 
-      const normalized = normalizeForDeduplication(excerpt);
-      if (!normalized || hasEquivalentFact(seen, normalized)) {
+      const contentType = classifyContentType(statement);
+      const displayText = normalizeDisplayStatement(statement);
+      const normalized = normalizeForDeduplication(displayText);
+      if (!normalized || seen.some((existing) => areEquivalentStatements(existing, normalized))) {
         continue;
       }
-      seen.add(normalized);
+      seen.push(normalized);
 
-      const category = classifyFact(excerpt);
+      const category = legacyCategoryFor(contentType, displayText);
       facts.push({
         id: `fact:${item.id}:${index}`,
         category,
-        text: cleanFindingText(excerpt, category),
+        contentType,
+        text: displayText,
         evidenceId: item.id,
         documentId: item.documentId,
         documentName: item.documentName,
         page: item.page,
         excerpt,
-        relevance: relevanceFor(category),
+        relevance: relevanceFor(contentType, category),
       });
     }
   }
 
-  const ordered = facts.sort((left, right) => categoryOrder(left.category) - categoryOrder(right.category));
+  const ordered = facts.sort((left, right) => contentTypeOrder(left.contentType) - contentTypeOrder(right.contentType));
   return INTERACTION_FOCUS.test(question)
-    ? ordered.sort((left, right) => Number(right.category === "interaction") - Number(left.category === "interaction"))
+    ? ordered.sort((left, right) => Number(right.contentType === "interaction_concern") - Number(left.contentType === "interaction_concern"))
     : ordered;
+}
+
+function isIncompleteStatement(value: string) {
+  if (/\.\.\.|…/.test(value)) return true;
+  if (/\b(?:and|or|that|which|because|with|from|to|of|frequent)\s*[,:;-]*$/i.test(value)) return true;
+  return /^(?:the\s+)?(?:first|second|third)\s+concern\s+is\s+that\b/i.test(value) && !/[.!?]$/.test(value);
+}
+
+function isTruncatedCandidate(
+  excerpt: string,
+  index: number,
+  candidates: string[],
+  evidence: EvidenceItem,
+) {
+  if (index !== candidates.length - 1 || /[.!?)]$/.test(excerpt)) return false;
+  const continuation = evidence.contextAfter.trimStart();
+  return continuation.length > 0 && /^[a-z]/.test(continuation);
 }
 
 export function factsByCategory(facts: GroundedFact[], ...categories: GroundedFactCategory[]) {
@@ -75,11 +99,16 @@ export function buildGroundedReport({
   evidence: EvidenceItem[];
   executiveSummaryOverride?: string;
 }): ReportOutput {
-  const interactions = factsByCategory(facts, "interaction");
-  const efficacy = factsByCategory(facts, "efficacy", "statistical");
-  const safety = factsByCategory(facts, "safety");
-  const context = factsByCategory(facts, "study-design");
-  const uncertainties = factsByCategory(facts, "limitation", "exclusion");
+  const interactions = facts.filter((fact) => fact.contentType === "interaction_concern");
+  const efficacy = facts.filter((fact) =>
+    (fact.contentType === "finding" || fact.contentType === "longitudinal_change") &&
+    (fact.category === "efficacy" || fact.category === "statistical"),
+  );
+  const safety = facts.filter((fact) => fact.contentType === "safety_observation");
+  const context = facts.filter((fact) => fact.contentType === "finding" && fact.category === "study-design");
+  const uncertainties = facts.filter((fact) =>
+    fact.contentType === "limitation" || fact.contentType === "discrepancy",
+  );
   const interactionFocused = INTERACTION_FOCUS.test(question);
   const keyFindings = uniqueFacts(interactionFocused
     ? [...interactions.slice(0, 6), ...efficacy.slice(0, 2)]
@@ -124,7 +153,7 @@ export function buildGroundedReport({
     executiveSummary,
     keyFindings: keyFindings.map((fact) => fact.text),
     evidenceTable: reportFacts.map((fact) => ({
-      topic: labelForCategory(fact.category),
+      topic: labelForContentType(fact.contentType, fact.category),
       finding: fact.text,
       supportingSource: `${fact.documentName}${fact.page ? `, page ${fact.page}` : ""}`,
       confidence: "Source-extracted",
@@ -152,89 +181,116 @@ export function isConcreteReport(report: ReportOutput, facts: GroundedFact[], qu
   return numbersGrounded && topical && uniqueFindings.size === report.keyFindings.length;
 }
 
-function extractInteractionCandidates(text: string) {
-  const matches: string[] = [];
-  const rowStart = "(?:Hydroxychloroquine|Propranolol|Omeprazole|Ibuprofen)\\s*\\+";
-  const tableFinding = new RegExp(
-    `(${rowStart}[\\s\\S]{8,300}?)(?=${rowStart}|Potential Contradiction|Recommended Medication|Pharmacist Conclusion|$)`,
-    "gi",
-  );
-  for (const match of text.matchAll(tableFinding)) {
-    const value = match[1].replace(/\s+/g, " ").trim().replace(/\s+(?:an|unc|suspe|re)$/i, "");
-    if (/qtc?|interaction|absorption|blood loss|orthostatic|risk|concern|exposure/i.test(value)) {
-      matches.push(value);
-    }
-  }
-
-  for (const sentence of text.split(/(?<=[.!?])\s+(?=[A-Z])/)) {
-    if (
-      sentence.length <= 460 &&
-      /^[A-Z0-9]/.test(sentence) &&
-      countMedicationMentions(sentence) < 2 &&
-      !/medication reconciliation|interaction and safety findings|patient-reported intermittent use|status key safety/i.test(sentence) &&
-      /medication-related|cumulative qt|prolong qt|iron absorption|compensatory tachycardia|gastrointestinal blood loss|interaction/i.test(sentence)
-    ) {
-      matches.push(sentence);
-    }
-  }
-  return matches;
-}
-
-function splitSourceSentences(text: string) {
-  return text
+function splitSourceStatements(text: string) {
+  const lines = text
     .replace(/\s*\u2022\s*/g, "\n")
-    .split(/\n|(?<=[.!?])\s+(?=[A-Z0-9])/)
-    .map((sentence) => sentence.replace(/\s+/g, " ").trim())
-    .filter((sentence) => sentence.length >= 18 && /^[A-Z0-9]/.test(sentence));
+    .split(/\n+/)
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+  return groupLikelyTableRows(lines)
+    .flatMap((line) => line.split(/(?<=[.!?])\s+(?=[A-Z0-9])/))
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length >= 18 && /^[A-Z0-9(]/.test(statement));
 }
 
-function classifyFact(text: string): GroundedFactCategory {
-  if (/\s\+\s|drug interaction|medication-related|cumulative qt|prolong qt|coadmin|iron absorption|propranolol.*orthostatic|ibuprofen.*blood loss/i.test(text)) {
-    return "interaction";
+function groupLikelyTableRows(lines: string[]) {
+  const grouped: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const medicationRow = /^[A-Z][A-Za-z-]+\s+\d+(?:\.\d+)?\s*(?:mg|mcg|g|mL)\b/i.test(line);
+    if (!medicationRow) {
+      grouped.push(line);
+      continue;
+    }
+
+    const parts = [line];
+    const next = lines[index + 1] ?? "";
+    const following = lines[index + 2] ?? "";
+    if (/^(?:active|inactive|current|historical)$/i.test(next)) {
+      parts.push(next);
+      index += 1;
+      if (/^(?:can|may|could|should)\b/i.test(following)) {
+        parts.push(following);
+        index += 1;
+      }
+    } else if (/^(?:can|may|could|should)\b/i.test(next)) {
+      parts.push(next);
+      index += 1;
+    }
+    grouped.push(parts.join(" "));
   }
-  if (/excluded|pediatric|geriatric|pregnant|population was narrow/i.test(text)) {
-    return "exclusion";
+  return grouped;
+}
+
+export function classifyContentType(text: string): ResearchContentType {
+  const value = text.replace(/\s+/g, " ").trim();
+  if (isQuestion(value)) return "unresolved_question";
+  if (isRecommendation(value)) return "recommendation";
+  if (isLongitudinalChange(value)) return "longitudinal_change";
+  if (/\b(?:contradiction|discrepancy|inconsisten(?:t|cy)|conflicting|conflict between|differs? between|documentation differs|reported differently)\b|\b(?:document|record|note|history)\b.{0,80}\b(?:whereas|but|versus|vs\.?|differs?)\b/i.test(value)) {
+    return "discrepancy";
   }
-  if (/limitation|uncertain|does not prove|not establish|unresolved|missing evidence|not formally exclude|small subgroup|limited (?:to|follow-up)|larger multi-center|longer follow-up|recommended|confidence intervals overlap|remains depleted|remains unknown/i.test(text)) {
+  if (/\s(?:\+|plus)\s|combined with|drug interaction|medication-related|cumulative qt|qt[- ]prolong|coadmin|concomitant.{0,40}(?:medication|therapy|drug)|absorption.{0,40}(?:medication|therapy|dose)|interaction concern/i.test(value)) {
+    return "interaction_concern";
+  }
+  if (/^[A-Z][a-z][A-Za-z-]{3,}\b.{0,80}\b(?:may|can|could)\s+(?:increase|decrease|reduce|worsen|contribute|prolong|interfere|inhibit|induce)\b/i.test(value)) {
+    return "interaction_concern";
+  }
+  if (/limitation|uncertain|does not prove|not establish|unresolved|missing evidence|not formally exclude|small subgroup|limited (?:to|follow-up)|confidence intervals overlap|remains unknown|insufficient evidence|cannot determine|excluded|not represented/i.test(value)) {
     return "limitation";
+  }
+  if (/randomi[sz]ed|double-blind|placebo-controlled|participants?|subjects?|primary endpoint|secondary endpoint|received .*placebo/i.test(value)) {
+    return "finding";
+  }
+  if (/adverse|headache|nausea|fatigue|dizziness|rash|injection-site|serious event|toxicity|palpitations|syncope|bleeding|orthostatic symptoms|safety signal/i.test(value)) {
+    return "safety_observation";
+  }
+  return CONCRETE_SIGNAL.test(value) ? "finding" : "evidence_excerpt";
+}
+
+export function normalizeDisplayStatement(text: string) {
+  return text
+    .replace(/\s+/g, " ")
+    .replace(LEADING_LABEL, "")
+    .replace(/^(?:(?:medication|drug)\s+(?:combination|pair)\s+(?:concern|priority|finding|rationale)\s*)+/i, "")
+    .replace(/^(?:critical|high|moderate|low)(?:[- ]to[- ](?:high|moderate|low))?\s+priority\s*[:\-]?\s*/i, "")
+    .replace(/\s+((?:critical|high|moderate|low)(?:[- ]to[- ](?:high|moderate|low))? concern)\s+/i, ": $1. ")
+    .replace(/\.\s+\.$/, ".")
+    .trim();
+}
+
+function isQuestion(value: string) {
+  return /\?$/.test(value) || /^(?:whether|what|when|where|why|how|which|who|has|have|had|is|are|was|were|could|would|should|did|does|do|can)\b/i.test(value);
+}
+
+function isRecommendation(value: string) {
+  return /^(?:recommend(?:ed|ation)?|plan(?:ned)?|monitor|repeat|obtain|consider|continue|discontinue|start|stop|avoid|review|evaluate|assess|recheck|schedule|refer|confirm|verify)\b|\b(?:is|are|was|were) (?:recommended|needed)\b|\b(?:should|needs? to)\s+(?:be\s+)?(?:monitored|repeated|obtained|considered|reviewed|evaluated|confirmed|verified|stopped|started|avoided)\b/i.test(value);
+}
+
+function isLongitudinalChange(value: string) {
+  const direction = /\b(?:improved|decreased|declined|increased|rose|fell|normalized|reduced|worsened|persisted|remained)\b/i.test(value);
+  const pairedValues = /\bfrom\s+[-+]?\d+(?:\.\d+)?(?:\s*\w+)?\s+(?:to|→)\s+[-+]?\d+(?:\.\d+)?/i.test(value);
+  const temporal = /\b(?:baseline|initial|earlier|later|follow-up|subsequent|previous|after|over time)\b/i.test(value);
+  const compactPair = /^[A-Za-z][A-Za-z /_-]{1,30}\s+[-+]?\d+(?:\.\d+)?\s+(?:(?:to|→|->)\s+)?[-+]?\d+(?:\.\d+)?(?:\s*\w+)?$/i.test(value);
+  return pairedValues || compactPair || (direction && temporal) || /\b(?:reduced|improved|decreased|increased)\b.{0,50}\bbut (?:still )?(?:persisted|remained)\b/i.test(value);
+}
+
+function isStructuralNoise(value: string) {
+  const withoutPunctuation = value.replace(/[:|/\-]+/g, " ").replace(/\s+/g, " ").trim();
+  return TABLE_HEADER.test(withoutPunctuation) || /^(?:table|figure|appendix)\s+\d+\b/i.test(value);
+}
+
+function legacyCategoryFor(contentType: ResearchContentType, text: string): GroundedFactCategory {
+  if (contentType === "interaction_concern") return "interaction";
+  if (contentType === "safety_observation") return "safety";
+  if (contentType === "limitation" || contentType === "discrepancy" || contentType === "unresolved_question") {
+    return /excluded|not represented|population/i.test(text) ? "exclusion" : "limitation";
   }
   if (/randomi[sz]ed|double-blind|placebo-controlled|participants?|subjects?|primary endpoint|secondary endpoint|received .*placebo|follow-up date|collection date/i.test(text)) {
     return "study-design";
   }
-  if (/adverse|headache|nausea|fatigue|dizziness|rash|injection-site|serious event|safety|qtc?|palpitations|syncope/i.test(text)) {
-    return "safety";
-  }
-  if (/\bp\s*[=<]|confidence interval|statistical|significant/i.test(text)) {
-    return "statistical";
-  }
+  if (/\bp\s*[=<]|confidence interval|statistical|significant/i.test(text)) return "statistical";
   return "efficacy";
-}
-
-function cleanFindingText(text: string, category: GroundedFactCategory) {
-  let value = text
-    .replace(/^(?:mock clinical study report\s*)/i, "")
-    .replace(/^(?:study overview|study design|key findings|safety|limitations|pharmacist conclusion)\s+/i, "")
-    .replace(/\.\s+\.$/, ".")
-    .trim();
-
-  if (category === "interaction") {
-    value = value.replace(
-      /\s+(Moderate concern|Low-to-moderate concern|Clinically relevant)\s+/i,
-      ": $1. ",
-    );
-    if (/^Hydroxychloroquine \+ recent azithromycin exposure/i.test(value)) {
-      value = "Hydroxychloroquine + recent azithromycin exposure: Moderate concern. Both can prolong QT.";
-    } else if (/^Hydroxychloroquine \+ borderline QTc 477 ms/i.test(value)) {
-      value = "Hydroxychloroquine + borderline QTc 477 ms: Clinically relevant. Repeat ECG and review modifiable risk factors, including electrolytes.";
-    } else if (/^Propranolol \+ orthostatic symptoms/i.test(value)) {
-      value = "Propranolol + orthostatic symptoms: Moderate concern. It could worsen lightheadedness or reduce the compensatory heart-rate response.";
-    } else if (/^Omeprazole \+ oral iron/i.test(value)) {
-      value = "Omeprazole + oral iron: Low-to-moderate concern. Frequent acid suppression may reduce iron absorption; actual use frequency is uncertain.";
-    } else if (/^Ibuprofen \+ heavy menstrual bleeding \/ anemia/i.test(value)) {
-      value = "Ibuprofen + heavy menstrual bleeding or anemia: Moderate concern. NSAID use may contribute to gastrointestinal blood loss.";
-    }
-  }
-  return value;
 }
 
 function buildDirectAnswer({
@@ -256,20 +312,10 @@ function buildDirectAnswer({
     }
 
     const interactionText = interactions.map((fact) => fact.text).join(" ");
-    const themes: string[] = [];
-    if (/qtc?|prolong qt|hydroxychloroquine|azithromycin/i.test(interactionText)) {
-      themes.push("The strongest concern is cumulative QT-prolongation risk, especially where QT-active medications overlap with a prolonged QTc or electrolyte abnormalities.");
+    if (/qtc?|qt[- ]prolong/i.test(interactionText)) {
+      return "Several medication-related concerns are documented, with cumulative QT-prolongation risk as the strongest concern, but no harmful arrhythmia or medication-caused injury is proven.";
     }
-    if (/omeprazole|iron absorption|acid suppression/i.test(interactionText)) {
-      themes.push("Frequent acid suppression may also reduce oral iron absorption and delay recovery.");
-    }
-    if (/propranolol|orthostatic/i.test(interactionText)) {
-      themes.push("Propranolol may worsen orthostatic symptoms or blunt compensatory tachycardia.");
-    }
-    if (/ibuprofen|blood loss/i.test(interactionText)) {
-      themes.push("Ibuprofen may add bleeding-related risk when anemia or heavy bleeding is present.");
-    }
-    return `Yes. The sources identify several medication-related concerns. ${themes.join(" ")} These findings describe documented risk signals, not proof that a harmful event occurred.`;
+    return `The sources document ${interactions.length} medication-related concern${interactions.length === 1 ? "" : "s"}. These are source-reported risk signals, not proof that a harmful medication event occurred.`;
   }
 
   const strongest = uniqueFacts([efficacy[0], efficacy[1], safety[0], uncertainties[0]]);
@@ -278,32 +324,44 @@ function buildDirectAnswer({
     : "The retrieved passages did not contain enough concrete information to answer the question reliably.";
 }
 
-function relevanceFor(category: GroundedFactCategory) {
-  return {
-    interaction: "Supports the medication-risk assessment.",
+function relevanceFor(contentType: ResearchContentType, category: GroundedFactCategory) {
+  const byContentType: Partial<Record<ResearchContentType, string>> = {
+    interaction_concern: "Supports the medication-interaction assessment.",
+    safety_observation: "Supports the source-reported safety assessment.",
+    recommendation: "Records a recommended action separately from observed findings.",
+    unresolved_question: "Identifies a question the uploaded evidence does not resolve.",
+    discrepancy: "Identifies a meaningful difference between source records.",
+    longitudinal_change: "Records a change across time or repeated observations.",
+    limitation: "Identifies a boundary or gap in the available evidence.",
+    evidence_excerpt: "Preserves relevant source context without promoting it to a conclusion.",
+  };
+  return byContentType[contentType] ?? {
     efficacy: "Supports the reported outcome assessment.",
-    safety: "Supports the safety assessment.",
     "study-design": "Establishes the source and clinical context.",
-    limitation: "Identifies an unresolved uncertainty.",
-    exclusion: "Identifies a population not represented by the evidence.",
     statistical: "Supports the quantitative result.",
+    interaction: "Supports the medication-interaction assessment.",
+    safety: "Supports the source-reported safety assessment.",
+    limitation: "Identifies a boundary in the available evidence.",
+    exclusion: "Identifies a population not represented by the evidence.",
   }[category];
 }
 
-function labelForCategory(category: GroundedFactCategory) {
+function labelForContentType(contentType: ResearchContentType, category: GroundedFactCategory) {
   return {
-    interaction: "Medication interaction",
-    efficacy: "Outcome",
-    safety: "Safety",
-    "study-design": "Source context",
-    limitation: "Uncertainty",
-    exclusion: "Excluded population",
-    statistical: "Statistical result",
-  }[category];
+    finding: category === "study-design" ? "Source context" : category === "statistical" ? "Statistical result" : "Finding",
+    interaction_concern: "Medication interaction",
+    safety_observation: "Safety observation",
+    recommendation: "Recommendation",
+    unresolved_question: "Open question",
+    discrepancy: "Documentation discrepancy",
+    longitudinal_change: "Longitudinal change",
+    limitation: "Limitation",
+    evidence_excerpt: "Evidence excerpt",
+  }[contentType];
 }
 
-function categoryOrder(category: GroundedFactCategory) {
-  return ["interaction", "statistical", "efficacy", "safety", "study-design", "limitation", "exclusion"].indexOf(category);
+function contentTypeOrder(contentType: ResearchContentType) {
+  return ["interaction_concern", "finding", "safety_observation", "longitudinal_change", "discrepancy", "limitation", "unresolved_question", "recommendation", "evidence_excerpt"].indexOf(contentType);
 }
 
 function buildMissingEvidence(facts: GroundedFact[], interactionFocused: boolean) {
@@ -321,13 +379,18 @@ function buildMissingEvidence(facts: GroundedFact[], interactionFocused: boolean
 }
 
 function buildFollowUpQuestions(question: string, facts: GroundedFact[]) {
+  const extractedQuestions = facts
+    .filter((fact) => fact.contentType === "unresolved_question")
+    .map((fact) => fact.text);
+  if (extractedQuestions.length > 0) return uniqueStrings(extractedQuestions).slice(0, 4);
+
   const text = facts.map((fact) => fact.text).join(" ");
   const questions: string[] = [];
   if (INTERACTION_FOCUS.test(question)) {
-    if (/qtc?|hydroxychloroquine|azithromycin/i.test(text)) questions.push("Has QTc remained within range after electrolyte correction and medication changes?");
-    if (/omeprazole|iron absorption/i.test(text)) questions.push("What is the confirmed frequency and timing of acid-suppressing medication relative to oral iron?");
-    if (/propranolol|orthostatic/i.test(text)) questions.push("Did orthostatic symptoms improve after propranolol was stopped?");
-    if (/ibuprofen|blood loss/i.test(text)) questions.push("Has gastrointestinal or menstrual blood loss been adequately evaluated?");
+    if (/qtc?|qt[- ]prolong/i.test(text)) questions.push("Did the QTc remain stable after the documented medication and electrolyte changes?");
+    if (/absorption|acid suppress/i.test(text)) questions.push("What is the confirmed frequency and timing of the medication associated with the absorption concern?");
+    if (/orthostatic/i.test(text)) questions.push("Did the orthostatic symptoms resolve after the documented medication change?");
+    if (/blood loss|bleeding/i.test(text)) questions.push("Was gastrointestinal or another ongoing source of blood loss excluded?");
   }
   if (questions.length === 0) {
     questions.push(`Which additional source would most reduce uncertainty for: ${question}`);
@@ -391,25 +454,42 @@ ${facts.map((fact, index) => `- [E${index + 1}] ${fact.documentName}${fact.page 
 ${RESEARCH_DISCLAIMER}`;
 }
 
-function normalizeForDeduplication(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9%]+/g, " ").trim();
+export function normalizeForDeduplication(value: string) {
+  return normalizeDisplayStatement(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9.%]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function hasEquivalentFact(seen: Set<string>, candidate: string) {
-  for (const existing of seen) {
-    if (existing === candidate) return true;
-    if (candidate.length > 45 && (existing.includes(candidate) || candidate.includes(existing))) return true;
-  }
-  return false;
+export function areEquivalentStatements(left: string, right: string) {
+  const first = normalizeForDeduplication(left);
+  const second = normalizeForDeduplication(right);
+  if (!first || !second) return false;
+  if (first === second) return true;
+
+  const firstNumbers = extractMaterialNumbers(first);
+  const secondNumbers = extractMaterialNumbers(second);
+  if (!sameValues(firstNumbers, secondNumbers)) return false;
+
+  const firstTokens = new Set(first.split(" ").filter(Boolean));
+  const secondTokens = new Set(second.split(" ").filter(Boolean));
+  const intersection = Array.from(firstTokens).filter((token) => secondTokens.has(token)).length;
+  const smaller = Math.min(firstTokens.size, secondTokens.size);
+  const larger = Math.max(firstTokens.size, secondTokens.size);
+  const containment = smaller === 0 ? 0 : intersection / smaller;
+  const jaccard = larger === 0 ? 0 : intersection / (firstTokens.size + secondTokens.size - intersection);
+
+  return (containment >= 0.9 && larger / Math.max(1, smaller) <= 1.55) || jaccard >= 0.84;
 }
 
 function uniqueFacts(values: Array<GroundedFact | undefined>) {
-  const seen = new Set<string>();
+  const seen: string[] = [];
   return values.filter((value): value is GroundedFact => {
     if (!value) return false;
     const normalized = normalizeForDeduplication(value.text);
-    if (hasEquivalentFact(seen, normalized)) return false;
-    seen.add(normalized);
+    if (seen.some((existing) => areEquivalentStatements(existing, normalized))) return false;
+    seen.push(normalized);
     return true;
   });
 }
@@ -418,8 +498,10 @@ function uniqueStrings(values: string[]) {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
-function countMedicationMentions(value: string) {
-  const normalized = value.toLowerCase();
-  return ["hydroxychloroquine", "azithromycin", "propranolol", "omeprazole", "ibuprofen", "ferrous sulfate"]
-    .filter((medication) => normalized.includes(medication)).length;
+function extractMaterialNumbers(value: string) {
+  return value.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+}
+
+function sameValues(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }

@@ -5,7 +5,6 @@ import { motion, useReducedMotion } from "framer-motion";
 import {
   ArrowLeft,
   Check,
-  ChevronDown,
   Circle,
   FileText,
   RefreshCw,
@@ -80,6 +79,14 @@ export function ResultsClient({ sessionId }: { sessionId: string }) {
 
   const modeLabel = session.mode === "live" ? "AI analysis" : "Local document analysis";
 
+  if (session.status === "completed") {
+    return (
+      <div className="mx-auto w-full max-w-[86rem] px-5 py-6 sm:px-8 lg:px-12 lg:py-8">
+        <InteractiveReport session={session} />
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto w-full max-w-[86rem] px-5 py-6 sm:px-8 lg:px-12 lg:py-10">
       <header className="border-b border-white/[0.07] pb-7">
@@ -88,7 +95,7 @@ export function ResultsClient({ sessionId }: { sessionId: string }) {
             <ArrowLeft className="h-3.5 w-3.5" /> All analyses
           </Link>
           <div className="flex items-center gap-2 font-mono text-[8px] uppercase tracking-[0.17em]">
-            <span className={`h-1.5 w-1.5 rounded-full ${session.status === "completed" ? "bg-emerald-400" : session.status === "error" ? "bg-amber-400" : "bg-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.8)]"}`} />
+            <span className={`h-1.5 w-1.5 rounded-full ${session.status === "error" ? "bg-amber-400" : "bg-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.8)]"}`} />
             <span className="text-slate-600">{modeLabel}</span>
             <span className="text-slate-800">/</span>
             <span className={session.status === "error" ? "text-amber-300/80" : "text-sky-300/80"}>{session.status}</span>
@@ -111,12 +118,6 @@ export function ResultsClient({ sessionId }: { sessionId: string }) {
 
       {session.status === "error" ? (
         <ResearchErrorState session={session} onRetry={() => void startAnalysis(session, { retry: true })} />
-      ) : session.status === "completed" ? (
-        <div className="pt-9">
-          <InteractiveReport session={session} />
-          <AgentReviewRecord session={session} />
-          <MethodDetails session={session} />
-        </div>
       ) : (
         <AnalysisProgress session={session} />
       )}
@@ -281,32 +282,6 @@ function AgentReviewRecord({ session, compact = false }: { session: ResearchSess
         })}
       </div>
     </section>
-  );
-}
-
-function MethodDetails({ session }: { session: ResearchSession }) {
-  return (
-    <details className="group mt-12 border-y border-white/[0.07] py-5">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-5 text-sm text-slate-500 transition hover:text-slate-300">
-        <span>How Aetheris produced this answer</span>
-        <ChevronDown className="h-4 w-4 transition-transform duration-300 group-open:rotate-180" />
-      </summary>
-      <div className="mt-5 grid gap-3 text-xs leading-6 text-slate-600 md:grid-cols-2">
-        <MethodItem value={`${session.metrics.pageCount} pages were extracted with page boundaries preserved.`} />
-        <MethodItem value={`${session.metrics.retrievedEvidenceCount} passages were ranked using ${session.metrics.retrievalMethod ?? "document"} retrieval.`} />
-        <MethodItem value="Outcomes, safety, study design, and limitations were reviewed separately before the answer was assembled." />
-        <MethodItem value="Each visible citation points back to the exact evidence record used for that finding." />
-      </div>
-    </details>
-  );
-}
-
-function MethodItem({ value }: { value: string }) {
-  return (
-    <div className="flex gap-3 rounded-[0.9rem] border border-white/[0.06] bg-white/[0.015] px-4 py-3">
-      <Check className="mt-1 h-3.5 w-3.5 shrink-0 text-sky-400/70" />
-      <p>{value}</p>
-    </div>
   );
 }
 

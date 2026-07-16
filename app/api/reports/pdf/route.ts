@@ -7,20 +7,23 @@ export const runtime = "nodejs";
 
 const reportSchema = z.object({
   question: z.string().min(7).max(4_000),
-  executiveSummary: z.string().min(1).max(20_000),
-  confidence: z.number().min(0).max(100),
+  directAnswer: z.string().min(1).max(20_000),
+  supportLabel: z.enum(["Strongly supported", "Moderately supported", "Limited support", "Conflicting evidence", "Insufficient evidence"]),
+  supportDescription: z.string().min(1).max(4_000),
+  primaryUncertainty: z.string().min(1).max(10_000),
   mode: z.enum(["live", "demo"]),
   createdAt: z.string(),
   documents: z.array(z.string().min(1).max(500)).max(100),
+  citedDocumentCount: z.number().int().nonnegative(),
   sections: z.array(z.object({
     title: z.string().min(1).max(200),
     items: z.array(z.object({
       text: z.string().min(1).max(20_000),
-      citations: z.array(z.string().max(40)).max(50),
+      citations: z.array(z.string().max(500)).max(50),
     })).max(200),
   })).max(20),
   citations: z.array(z.object({
-    label: z.string().max(40),
+    label: z.string().max(500),
     documentName: z.string().min(1).max(500),
     page: z.number().int().positive().nullable().optional(),
     excerpt: z.string().min(1).max(20_000),
@@ -31,6 +34,11 @@ const reportSchema = z.object({
 export async function POST(request: Request) {
   const parsed = reportSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
+    console.error("[Aetheris PDF] Invalid export payload", parsed.error.issues.map((issue) => ({
+      path: issue.path.join("."),
+      code: issue.code,
+      message: issue.message,
+    })));
     return NextResponse.json({ error: "The evidence brief could not be prepared for PDF export." }, { status: 400 });
   }
 

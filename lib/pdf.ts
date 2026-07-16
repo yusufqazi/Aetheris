@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { nanoid } from "nanoid";
 
-import { createDocumentPages } from "@/lib/pdf.shared";
+import { createDocumentPages, textItemsToStructuredText } from "@/lib/pdf.shared";
 import type { UploadedDocument } from "@/lib/types";
 
 const MIN_EXTRACTABLE_TEXT = 24;
@@ -95,9 +95,18 @@ export async function extractPdfDocument(file: File): Promise<UploadedDocument> 
       const page = await document.getPage(pageNumber);
       try {
         const content = await page.getTextContent();
-        const text = content.items
-          .map((item) => ("str" in item ? item.str : ""))
-          .join(" ");
+        const text = textItemsToStructuredText(
+          content.items.flatMap((item) =>
+            "str" in item
+              ? [{
+                  str: item.str,
+                  hasEOL: item.hasEOL,
+                  transform: item.transform,
+                  height: item.height,
+                }]
+              : [],
+          ),
+        );
         pages.push({ number: pageNumber, text });
       } finally {
         page.cleanup();

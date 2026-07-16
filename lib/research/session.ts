@@ -425,6 +425,8 @@ function normalizeEvidence(item: Partial<EvidenceItem>): EvidenceItem {
     lexicalScore: item.lexicalScore ?? 0,
     similarityScore: item.similarityScore ?? null,
     retrievalMethod: item.retrievalMethod ?? "lexical",
+    startOffset: item.startOffset ?? null,
+    endOffset: item.endOffset ?? null,
   };
 }
 

@@ -5,7 +5,61 @@ const DEFAULT_CHUNK_OVERLAP = 180;
 const CONTEXT_SIZE = 320;
 
 export function sanitizeText(text: string) {
-  return text.replace(/\s+/g, " ").trim();
+  const lines = text
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[\t ]+/g, " ").trim());
+  const normalized: string[] = [];
+
+  for (const line of lines) {
+    if (line || normalized.at(-1) !== "") normalized.push(line);
+  }
+
+  return normalized.join("\n").trim();
+}
+
+export interface PdfTextItemLike {
+  str: string;
+  hasEOL?: boolean;
+  transform?: number[];
+  height?: number;
+}
+
+export function textItemsToStructuredText(items: PdfTextItemLike[]) {
+  let output = "";
+  let previousY: number | null = null;
+  let previousHeight = 0;
+  let breakBeforeNext = false;
+
+  for (const item of items) {
+    const value = item.str.replace(/\s+/g, " ").trim();
+    const y = item.transform?.[5];
+    const height = Math.abs(item.height ?? item.transform?.[3] ?? previousHeight ?? 0);
+
+    if (value) {
+      const verticalShift = previousY !== null && y !== undefined
+        ? Math.abs(y - previousY)
+        : 0;
+      const lineThreshold = Math.max(2, Math.min(8, Math.max(height, previousHeight) * 0.55));
+      const blockThreshold = Math.max(10, Math.max(height, previousHeight) * 1.55);
+      const separator = output
+        ? breakBeforeNext || verticalShift > lineThreshold
+          ? verticalShift > blockThreshold ? "\n\n" : "\n"
+          : needsLeadingSpace(value) ? " " : ""
+        : "";
+      output += `${separator}${value}`;
+    }
+
+    breakBeforeNext = Boolean(item.hasEOL);
+    if (y !== undefined) previousY = y;
+    if (height > 0) previousHeight = height;
+  }
+
+  return sanitizeText(output);
+}
+
+function needsLeadingSpace(value: string) {
+  return !/^[,.;:!?%)\]}]/.test(value);
 }
 
 export function createDocumentPages(pages: Array<{ number: number; text: string }>) {

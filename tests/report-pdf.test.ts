@@ -6,11 +6,14 @@ describe("Aetheris PDF export", () => {
   it("creates a valid themed evidence brief", async () => {
     const bytes = await createAetherisReportPdf({
       question: "Are there any harmful drug interactions in these records?",
-      executiveSummary: "Yes. The records identify a cumulative QT-prolongation concern and several medication-related risks.",
-      confidence: 82,
+      directAnswer: "The records identify a cumulative QT-prolongation concern and several medication-related risks.",
+      supportLabel: "Moderately supported",
+      supportDescription: "Five source-grounded findings are linked to one cited document.",
+      primaryUncertainty: "The records do not prove that a harmful arrhythmia occurred.",
       mode: "demo",
       createdAt: "2026-07-15T12:00:00.000Z",
       documents: ["Medication_Safety_Review.pdf"],
+      citedDocumentCount: 1,
       sections: [{
         title: "Findings That Answer the Question",
         items: [{

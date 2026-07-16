@@ -20,11 +20,14 @@ export interface PdfReportCitationInput {
 
 export interface PdfReportInput {
   question: string;
-  executiveSummary: string;
-  confidence: number;
+  directAnswer: string;
+  supportLabel: string;
+  supportDescription: string;
+  primaryUncertainty: string;
   mode: "live" | "demo";
   createdAt: string;
   documents: string[];
+  citedDocumentCount: number;
   sections: PdfReportSectionInput[];
   citations: PdfReportCitationInput[];
   disclaimer: string;
@@ -132,9 +135,15 @@ export async function createAetherisReportPdf(input: PdfReportInput) {
 
   drawMeta(page, mono, input, y);
   y -= 48;
-  sectionLabel(page, mono, "DIRECT ANSWER", y);
+  sectionLabel(page, mono, "PRIMARY ANSWER", y);
   y -= 24;
-  paragraph(input.executiveSummary, { font: bold, size: 14, lineHeight: 21, color: colors.white });
+  paragraph(input.directAnswer, { font: bold, size: 14, lineHeight: 21, color: colors.white });
+  y -= 16;
+  paragraph(`${input.supportLabel}. ${input.supportDescription}`, { size: 9, lineHeight: 14, color: colors.cyan });
+  y -= 12;
+  sectionLabel(page, mono, "MAIN UNCERTAINTY", y);
+  y -= 22;
+  paragraph(input.primaryUncertainty, { size: 9.5, lineHeight: 15, color: colors.slate });
   y -= 24;
 
   for (const section of input.sections) {
@@ -213,7 +222,7 @@ function drawMeta(page: PDFPage, mono: PDFFont, input: PdfReportInput, y: number
   const mode = input.mode === "live" ? "MODEL-ASSISTED" : "LOCAL EXTRACTION";
   const values = [
     `${input.documents.length} SOURCE${input.documents.length === 1 ? "" : "S"}`,
-    `${input.confidence}% SOURCE SUPPORT`,
+    `${input.citedDocumentCount} CITED SOURCE${input.citedDocumentCount === 1 ? "" : "S"}`,
     mode,
     new Date(input.createdAt).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" }).toUpperCase(),
   ];

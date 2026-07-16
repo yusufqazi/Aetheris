@@ -1,4 +1,5 @@
 import type { EvidenceItem, ResearchIntelligence } from "@/lib/types";
+import { isQuestionOnlyQuote } from "@/lib/research/evidence-relationships";
 
 export function sanitizeResearchIntelligence(
   intelligence: ResearchIntelligence | undefined,
@@ -21,6 +22,19 @@ export function sanitizeResearchIntelligence(
     .map((item) => ({ ...item, evidenceIds: keepIds(item.evidenceIds) }))
     .filter((item) => item.evidenceIds.length > 0)
     .slice(0, 5);
+  const evidenceMappings = (intelligence.evidenceMappings ?? [])
+    .filter((mapping) => {
+      const source = evidence.find((item) => item.id === mapping.evidenceId || item.chunkId === mapping.evidenceId);
+      if (!source || isQuestionOnlyQuote(mapping.exactQuote)) return false;
+      return containsVerbatimQuote(source.excerpt, mapping.exactQuote);
+    })
+    .filter((mapping, index, values) => values.findIndex((candidate) =>
+      candidate.evidenceId === mapping.evidenceId &&
+      candidate.targetType === mapping.targetType &&
+      candidate.targetText === mapping.targetText &&
+      candidate.exactQuote === mapping.exactQuote,
+    ) === index)
+    .slice(0, 24);
 
   return {
     ...intelligence,
@@ -31,7 +45,13 @@ export function sanitizeResearchIntelligence(
     interactionPathways,
     contradictions,
     decisionChangingUnknowns: intelligence.decisionChangingUnknowns.slice(0, 6),
+    evidenceMappings,
   } satisfies ResearchIntelligence;
+}
+
+function containsVerbatimQuote(source: string, quote: string) {
+  if (source.includes(quote)) return true;
+  return source.replace(/\s+/g, " ").includes(quote.replace(/\s+/g, " ").trim());
 }
 
 export function isResearchIntelligenceGrounded(

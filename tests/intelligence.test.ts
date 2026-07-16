@@ -27,6 +27,10 @@ describe("research intelligence grounding", () => {
     expect(sanitized?.evidenceTrajectory).toHaveLength(1);
     expect(sanitized?.evidenceTrajectory[0].evidenceIds).toEqual(["evidence:valid"]);
     expect(sanitized?.interactionPathways).toHaveLength(0);
+    expect(sanitized?.evidenceMappings).toHaveLength(1);
+    expect(sanitized?.evidenceMappings?.[0].exactQuote).toBe(
+      "QTc improved after medication changes and electrolyte correction.",
+    );
     expect(isResearchIntelligenceGrounded(sanitized, evidence)).toBe(true);
   });
 });
@@ -59,6 +63,31 @@ function makeIntelligence(): ResearchIntelligence {
       whyItMatters: "It would strengthen temporal attribution.",
       evidenceNeeded: "Medication administration timestamps.",
       priority: "high",
+    }],
+    evidenceMappings: [{
+      evidenceId: "evidence:valid",
+      targetType: "finding",
+      targetText: "QTc improved after the documented changes.",
+      relationshipType: "supports",
+      exactQuote: "QTc improved after medication changes and electrolyte correction.",
+      relevanceExplanation: "Documents the follow-up QTc response.",
+      confidence: "high",
+    }, {
+      evidenceId: "evidence:valid",
+      targetType: "open_question",
+      targetText: "Did QTc remain stable?",
+      relationshipType: "supports",
+      exactQuote: "Did QTc remain stable?",
+      relevanceExplanation: "Incorrectly treats the question as evidence.",
+      confidence: "low",
+    }, {
+      evidenceId: "evidence:valid",
+      targetType: "finding",
+      targetText: "QTc normalized.",
+      relationshipType: "supports",
+      exactQuote: "QTc normalized completely.",
+      relevanceExplanation: "Fabricated quote.",
+      confidence: "high",
     }],
   };
 }

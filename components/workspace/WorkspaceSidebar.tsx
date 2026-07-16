@@ -94,7 +94,7 @@ export function WorkspaceSidebar({ onNavigate }: { onNavigate?: () => void }) {
                     }`}
                   />
                   <div className="min-w-0">
-                    <p className="line-clamp-2 text-xs leading-5 text-slate-400 transition group-hover:text-slate-200">
+                    <p title={session.question} className="line-clamp-2 text-xs leading-5 text-slate-400 transition group-hover:text-slate-200">
                       {session.question}
                     </p>
                     <p className="mt-1 font-mono text-[8px] uppercase tracking-[0.18em] text-slate-700">
@@ -110,18 +110,20 @@ export function WorkspaceSidebar({ onNavigate }: { onNavigate?: () => void }) {
         </div>
       </div>
 
-      <Link
-        href="/settings"
-        onClick={onNavigate}
-        className={`mt-4 flex items-center gap-3 rounded-[0.9rem] px-3 py-2.5 text-sm transition ${
-          pathname === "/settings"
-            ? "bg-white/[0.075] text-white"
-            : "text-slate-500 hover:bg-white/[0.035] hover:text-slate-200"
-        }`}
-      >
-        <Settings className="h-4 w-4" />
-        Settings
-      </Link>
+      <div className="mt-3 border-t border-white/[0.07] pt-3">
+        <Link
+          href="/settings"
+          onClick={onNavigate}
+          className={`flex items-center gap-3 rounded-[0.9rem] px-3 py-2.5 text-sm transition ${
+            pathname === "/settings"
+              ? "bg-white/[0.075] text-white"
+              : "text-slate-500 hover:bg-white/[0.035] hover:text-slate-200"
+          }`}
+        >
+          <Settings className="h-4 w-4" />
+          Settings
+        </Link>
+      </div>
     </div>
   );
 }

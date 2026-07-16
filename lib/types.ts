@@ -105,6 +105,8 @@ export interface EvidenceItem {
   lexicalScore: number;
   similarityScore?: number | null;
   retrievalMethod: RetrievalMethod;
+  startOffset?: number | null;
+  endOffset?: number | null;
 }
 
 export interface Citation {
@@ -116,6 +118,46 @@ export interface Citation {
   page?: number | null;
   excerpt: string;
   label: string;
+  exactQuote?: string;
+  startOffset?: number | null;
+  endOffset?: number | null;
+  relevance?: string;
+  supportedClaimIds?: string[];
+}
+
+export const EVIDENCE_RELATIONSHIP_TYPES = [
+  "supports",
+  "weakens",
+  "contradicts",
+  "provides_context",
+  "identifies_missing_evidence",
+  "proposes_follow_up",
+] as const;
+
+export type EvidenceRelationshipType = (typeof EVIDENCE_RELATIONSHIP_TYPES)[number];
+
+export interface EvidenceRelationship {
+  id: string;
+  evidenceId: string;
+  citationId: string;
+  supportedItemId: string;
+  relationshipType: EvidenceRelationshipType;
+  relevanceExplanation: string;
+  exactQuote: string;
+  documentId: string;
+  documentName: string;
+  page?: number | null;
+  confidence: "low" | "medium" | "high";
+}
+
+export interface ResearchEvidenceMapping {
+  evidenceId: string;
+  targetType: "finding" | "open_question" | "conflict" | "change";
+  targetText: string;
+  relationshipType: EvidenceRelationshipType;
+  exactQuote: string;
+  relevanceExplanation: string;
+  confidence: "low" | "medium" | "high";
 }
 
 export type GroundedFactCategory =
@@ -127,9 +169,24 @@ export type GroundedFactCategory =
   | "exclusion"
   | "statistical";
 
+export const RESEARCH_CONTENT_TYPES = [
+  "finding",
+  "interaction_concern",
+  "safety_observation",
+  "recommendation",
+  "unresolved_question",
+  "discrepancy",
+  "longitudinal_change",
+  "limitation",
+  "evidence_excerpt",
+] as const;
+
+export type ResearchContentType = (typeof RESEARCH_CONTENT_TYPES)[number];
+
 export interface GroundedFact {
   id: string;
   category: GroundedFactCategory;
+  contentType: ResearchContentType;
   text: string;
   evidenceId: string;
   documentId: string;
@@ -285,6 +342,7 @@ export interface ResearchIntelligence {
   interactionPathways: InteractionPathway[];
   contradictions: ResearchContradiction[];
   decisionChangingUnknowns: DecisionChangingUnknown[];
+  evidenceMappings?: ResearchEvidenceMapping[];
 }
 
 export interface ReportOutput extends AgentBaseOutput {
@@ -527,5 +585,8 @@ export interface WorkspaceInspectorSelection {
   tab: WorkspaceInspectorTab;
   sessionId?: string | null;
   evidenceId?: string | null;
+  citationIds?: string[];
+  claimText?: string | null;
+  evidenceRelationships?: EvidenceRelationship[];
   agentId?: AgentId | null;
 }

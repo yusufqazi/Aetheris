@@ -129,8 +129,6 @@ describe("research pipeline orchestration", () => {
         "Two serious adverse events",
         "one in placebo",
         "Pediatric, geriatric, and pregnant populations were excluded",
-        "Larger multi-center trials",
-        "Longer follow-up",
       ];
 
       expect(events).toContainEqual(expect.objectContaining({
@@ -198,12 +196,11 @@ describe("research pipeline orchestration", () => {
       const markdown = result.results.reportGeneration.markdownReport;
       const interactionFindings = result.results.groundedFacts?.filter((fact) => fact.category === "interaction") ?? [];
 
-      expect(summary).toMatch(/^Yes\./);
+      expect(summary).toMatch(/^Several medication-related concerns/);
       expect(summary).toMatch(/QT-prolongation/i);
-      expect(summary).toMatch(/iron absorption/i);
-      expect(summary).toMatch(/orthostatic/i);
       expect(markdown).toMatch(/Ibuprofen may contribute to gastrointestinal blood loss/i);
       expect(markdown).not.toMatch(/Synthetic test document/i);
+      expect(markdown).not.toMatch(/Larger multi-center trials are recommended/i);
       expect(interactionFindings.length).toBeGreaterThanOrEqual(4);
       expect(new Set(interactionFindings.map((fact) => fact.text.toLowerCase())).size).toBe(interactionFindings.length);
       expect(result.results.drugInteraction.summary).toMatch(/hydroxychloroquine|omeprazole|propranolol|ibuprofen/i);

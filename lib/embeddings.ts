@@ -185,6 +185,8 @@ export function chunksToEvidence(chunks: SearchChunk[], relevance: string): Evid
     lexicalScore: chunk.lexicalScore,
     similarityScore: chunk.similarityScore,
     retrievalMethod: chunk.retrievalMethod ?? "lexical",
+    startOffset: chunk.startOffset,
+    endOffset: chunk.endOffset,
   }));
 }
 

@@ -13,13 +13,14 @@ import {
   type ReportSection,
   type UploadedDocument,
 } from "@/lib/types";
+import { createClaimCitations } from "@/lib/research/evidence-spans";
 
 export function assembleResearchArtifacts(
   bundle: AnalysisBundle,
   evidence: EvidenceItem[],
   documents: UploadedDocument[],
 ) {
-  const citations = createCitations(evidence);
+  const citations = createCitations(evidence, bundle.groundedFacts ?? [], documents);
   const consensusClaims = createConsensusClaims(bundle, citations);
   const confidence = createConfidenceProfile(bundle, evidence, citations, documents);
   const sections = createReportSections(bundle, citations, confidence);
@@ -47,17 +48,12 @@ export function assembleResearchArtifacts(
   };
 }
 
-export function createCitations(evidence: EvidenceItem[]): Citation[] {
-  return evidence.map((item, index) => ({
-    id: `citation:${item.id}`,
-    evidenceId: item.id,
-    chunkId: item.chunkId,
-    documentId: item.documentId,
-    documentName: item.documentName,
-    page: item.page,
-    excerpt: item.excerpt,
-    label: `[${index + 1}]`,
-  }));
+export function createCitations(
+  evidence: EvidenceItem[],
+  facts: GroundedFact[] = [],
+  documents: UploadedDocument[] = [],
+): Citation[] {
+  return createClaimCitations(evidence, facts, documents);
 }
 
 export function createConfidenceProfile(
@@ -214,14 +210,19 @@ function createReportSections(
   confidence: ConfidenceProfile,
 ): ReportSection[] {
   const facts = bundle.groundedFacts ?? [];
-  const interactionFacts = facts.filter((fact) => fact.category === "interaction").slice(0, 6);
+  const interactionFacts = facts.filter((fact) => fact.contentType === "interaction_concern").slice(0, 6);
   const outcomeFacts = facts.filter((fact) =>
-    fact.category === "efficacy" || fact.category === "statistical",
+    (fact.contentType === "finding" || fact.contentType === "longitudinal_change") &&
+    (fact.category === "efficacy" || fact.category === "statistical"),
   ).slice(0, 2);
   const efficacy = [...interactionFacts, ...outcomeFacts];
-  const safety = facts.filter((fact) => fact.category === "safety").slice(0, 4);
-  const design = facts.filter((fact) => fact.category === "study-design").slice(0, 3);
-  const limitations = facts.filter((fact) => fact.category === "limitation" || fact.category === "exclusion").slice(0, 4);
+  const safety = facts.filter((fact) => fact.contentType === "safety_observation").slice(0, 4);
+  const design = facts.filter((fact) =>
+    fact.contentType === "finding" && fact.category === "study-design",
+  ).slice(0, 3);
+  const limitations = facts.filter((fact) =>
+    fact.contentType === "limitation" || fact.contentType === "discrepancy",
+  ).slice(0, 4);
   const executiveFacts = [efficacy[0], efficacy[1], safety[0], design[0], limitations[0]].filter(
     (fact): fact is GroundedFact => Boolean(fact),
   );

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { AGENT_IDS } from "@/lib/types";
+import { AGENT_IDS, EVIDENCE_RELATIONSHIP_TYPES } from "@/lib/types";
 
 export const documentPageSchema = z.object({
   number: z.number().int().positive(),
@@ -151,6 +151,15 @@ export const researchIntelligenceSchema = z.object({
     evidenceNeeded: z.string(),
     priority: z.enum(["high", "moderate", "low"]),
   })).max(6),
+  evidenceMappings: z.array(z.object({
+    evidenceId: z.string(),
+    targetType: z.enum(["finding", "open_question", "conflict", "change"]),
+    targetText: z.string(),
+    relationshipType: z.enum(EVIDENCE_RELATIONSHIP_TYPES),
+    exactQuote: z.string(),
+    relevanceExplanation: z.string(),
+    confidence: confidenceSchema,
+  })).max(24).default([]),
 });
 
 export const reportOutputSchema = z.object({
