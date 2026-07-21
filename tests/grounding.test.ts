@@ -3,10 +3,11 @@ import { describe, expect, it } from "vitest";
 import { textItemsToStructuredText } from "@/lib/pdf.shared";
 import {
   areEquivalentStatements,
+  buildGroundedReport,
   classifyContentType,
   extractGroundedFacts,
 } from "@/lib/research/grounding";
-import type { EvidenceItem } from "@/lib/types";
+import type { EvidenceItem, GroundedFact } from "@/lib/types";
 
 describe("research content normalization", () => {
   it.each([
@@ -84,6 +85,113 @@ describe("research content normalization", () => {
     expect(facts.map((fact) => fact.text)).toEqual([
       "Hemoglobin increased from 8.7 g/dL to 10.4 g/dL after four weeks.",
     ]);
+  });
+
+  it("reassembles visual PDF line wraps before extracting a complete fact", () => {
+    const facts = extractGroundedFacts([evidence([
+      "The diagnostic assessment strongly supports the documented autoimmune syndrome based on",
+      "the clinical presentation, antibody findings, and low complement measurements.",
+    ].join("\n"))], "What diagnosis is best supported and why?");
+
+    expect(facts).toHaveLength(1);
+    expect(facts[0].text).toContain("based on the clinical presentation");
+    expect(facts[0].text).toMatch(/measurements\.$/);
+  });
+
+  it("rejects a clipped source clause even when it contains diagnostic language", () => {
+    const item = evidence("The diagnostic assessment strongly supports an autoimmune syndrome based on the");
+    item.contextAfter = " antibody findings documented later on the page.";
+
+    expect(extractGroundedFacts([item], "What diagnosis is supported?")).toEqual([]);
+  });
+
+  it("retains clinically meaningful laboratory and treatment changes", () => {
+    const facts = extractGroundedFacts([evidence([
+      "CRP decreased from 18 mg/L to 6 mg/L at follow-up.",
+      "At the subsequent visit, treatment was held because toxicity worsened.",
+    ].join("\n"))], "How did biomarkers, safety, and treatment change over time?");
+
+    expect(facts.map((fact) => fact.text)).toEqual([
+      "CRP decreased from 18 mg/L to 6 mg/L at follow-up.",
+      "At the subsequent visit, treatment was held because toxicity worsened.",
+    ]);
+    expect(facts.map((fact) => fact.contentType)).toEqual([
+      "longitudinal_change",
+      "longitudinal_change",
+    ]);
+    expect(facts[1].category).toBe("safety");
+  });
+
+  it("retains imperative and progressive clinical decisions for conflict analysis", () => {
+    const facts = extractGroundedFacts([evidence([
+      "Continue cautious fluid resuscitation while initiating norepinephrine if hypotension persists.",
+      "Favor early vasopressor support rather than repeated large fluid boluses.",
+    ].join("\n"))], "How should immediate treatment balance benefit and risk?");
+
+    expect(facts.map((fact) => fact.contentType)).toEqual([
+      "recommendation",
+      "recommendation",
+    ]);
+  });
+
+  it("builds a qualified decision synthesis instead of giving up when uncertainty remains", () => {
+    const statements: Array<Pick<GroundedFact, "text" | "contentType" | "category">> = [
+      {
+        text: "The documented acute syndrome remains the leading diagnosis.",
+        contentType: "finding",
+        category: "context",
+      },
+      {
+        text: "Broad-spectrum antimicrobial therapy should begin immediately.",
+        contentType: "recommendation",
+        category: "context",
+      },
+      {
+        text: "Early vasopressor support is recommended when perfusion remains inadequate.",
+        contentType: "recommendation",
+        category: "context",
+      },
+      {
+        text: "Aggressive fluid administration may worsen volume overload and pulmonary complications.",
+        contentType: "safety_observation",
+        category: "safety",
+      },
+      {
+        text: "The source-control requirement remains unresolved pending definitive imaging.",
+        contentType: "limitation",
+        category: "limitation",
+      },
+    ];
+    const evidenceItems = statements.map((statement, index) => ({
+      ...evidence(statement.text),
+      id: `evidence:synthesis:${index}`,
+      chunkId: `chunk:synthesis:${index}`,
+      documentId: `document:synthesis:${index}`,
+      documentName: `Source_${index + 1}.pdf`,
+    }));
+    const facts: GroundedFact[] = statements.map((statement, index) => ({
+      id: `fact:synthesis:${index}`,
+      ...statement,
+      evidenceId: evidenceItems[index].id,
+      documentId: evidenceItems[index].documentId,
+      documentName: evidenceItems[index].documentName,
+      page: 1,
+      excerpt: statement.text,
+      relevance: "Directly relevant to the requested decision synthesis.",
+    }));
+
+    const report = buildGroundedReport({
+      question: "What is the leading diagnosis, which treatment priorities should be followed, what risks constrain treatment, and what remains uncertain?",
+      facts,
+      evidence: evidenceItems,
+    });
+
+    expect(report.executiveSummary).not.toMatch(/do not establish|not enough|incomplete answer/i);
+    expect(report.executiveSummary).toMatch(/antimicrobial/i);
+    expect(report.executiveSummary).toMatch(/leading diagnosis/i);
+    expect(report.executiveSummary).toMatch(/vasopressor/i);
+    expect(report.executiveSummary).toMatch(/fluid|volume overload|pulmonary/i);
+    expect(report.executiveSummary).toMatch(/source-control|imaging|unresolved/i);
   });
 });
 

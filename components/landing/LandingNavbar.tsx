@@ -157,6 +157,14 @@ export function LandingNavbar() {
 
           <div className="flex items-center gap-3">
             <Link
+              href="/sign-in"
+              className={`inline-flex items-center rounded-full border border-white/12 px-3 text-xs font-medium text-[var(--text-secondary)] transition hover:border-white/20 hover:text-white sm:px-4 sm:text-sm ${
+                isScrolled ? "py-2" : "py-2.5"
+              }`}
+            >
+              Sign in
+            </Link>
+            <Link
               href="/research/new"
               className={`inline-flex items-center gap-2 rounded-full bg-[var(--accent)] px-4 text-sm font-semibold text-white shadow-[var(--shadow-glow)] transition duration-300 hover:translate-y-[-1px] hover:bg-[var(--accent-strong)] ${
                 isScrolled ? "py-2" : "py-2.5"

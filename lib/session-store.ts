@@ -14,9 +14,13 @@ const MIGRATION_KEY = "aetheris-indexeddb-migration-v1";
 interface AetherisDatabase extends DBSchema {
   sessions: {
     key: string;
-    value: ResearchSession;
+    value: StoredResearchSession;
     indexes: { "by-updated-at": string };
   };
+}
+
+interface StoredResearchSession extends ResearchSession {
+  ownerId?: string;
 }
 
 let databasePromise: Promise<IDBPDatabase<AetherisDatabase>> | null = null;
@@ -36,7 +40,7 @@ function getDatabase() {
   return databasePromise;
 }
 
-export async function loadLocalSessions() {
+export async function loadLocalSessions(ownerId?: string | null) {
   const database = getDatabase();
   if (!database) {
     return [] as ResearchSession[];
@@ -46,18 +50,19 @@ export async function loadLocalSessions() {
   const values = await (await database).getAll(SESSION_STORE);
 
   return values
+    .filter((session) => (ownerId ? session.ownerId === ownerId : !session.ownerId))
     .map(normalizeResearchSession)
     .filter((session): session is ResearchSession => Boolean(session))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-export async function saveLocalSession(session: ResearchSession) {
+export async function saveLocalSession(session: ResearchSession, ownerId?: string | null) {
   const database = getDatabase();
   if (!database) {
     return session;
   }
 
-  await (await database).put(SESSION_STORE, session);
+  await (await database).put(SESSION_STORE, { ...session, ownerId: ownerId ?? undefined });
   return session;
 }
 
@@ -75,22 +80,30 @@ export async function saveLocalSessions(sessions: ResearchSession[]) {
   return sessions;
 }
 
-export async function findLocalSession(id: string) {
+export async function findLocalSession(id: string, ownerId?: string | null) {
   const database = getDatabase();
   if (!database) {
     return null;
   }
 
   await migrateLegacySessions();
-  return normalizeResearchSession(await (await database).get(SESSION_STORE, id));
+  const session = await (await database).get(SESSION_STORE, id);
+  if (!session || (ownerId ? session.ownerId !== ownerId : session.ownerId)) {
+    return null;
+  }
+  return normalizeResearchSession(session);
 }
 
-export async function deleteLocalSession(id: string) {
+export async function deleteLocalSession(id: string, ownerId?: string | null) {
   const database = getDatabase();
   if (!database) {
     return;
   }
 
+  const current = await (await database).get(SESSION_STORE, id);
+  if (!current || (ownerId ? current.ownerId !== ownerId : current.ownerId)) {
+    return;
+  }
   await (await database).delete(SESSION_STORE, id);
 }
 

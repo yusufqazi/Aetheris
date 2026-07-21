@@ -14,7 +14,10 @@ import { useEffect, useState } from "react";
 import { CitationLinks, documentTitle } from "@/components/workspace/report/CitationLinks";
 import { InvestigationSummary } from "@/components/workspace/report/InvestigationSummary";
 import { getSessionCitations, selectNarrowEvidenceQuote } from "@/lib/research/evidence-spans";
-import { semanticFamily } from "@/lib/research/evidence-relationships";
+import {
+  areSemanticallyEquivalent,
+  semanticTopics,
+} from "@/lib/research/evidence-relationships";
 import { buildInvestigationData } from "@/lib/research/investigation";
 import type { AgentId, Citation, ResearchSession } from "@/lib/types";
 
@@ -155,7 +158,7 @@ export function InteractiveReport({ session }: { session: ResearchSession }) {
               {investigation.directAnswer}
             </h2>
             {investigation.strongestCitationIds.length > 0 ? (
-              <div className="mt-5"><CitationLinks citationIds={investigation.strongestCitationIds} citations={citations} session={session} limit={3} claim={investigation.directAnswer} relationships={investigation.findings.flatMap((finding) => finding.relationships)} /></div>
+              <div className="mt-5"><CitationLinks citationIds={investigation.strongestCitationIds} citations={citations} session={session} limit={4} claim={investigation.directAnswer} relationships={investigation.findings.flatMap((finding) => finding.relationships)} /></div>
             ) : null}
           </div>
           <div className="border-t border-white/[0.08] pt-5 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
@@ -182,25 +185,29 @@ export function InteractiveReport({ session }: { session: ResearchSession }) {
         <InvestigationSummary investigation={investigation} citations={citations} session={session} />
       </div>
 
-      {strongestEvidence.length > 0 ? (
-        <section className="mt-8 border-t border-white/[0.07] pt-7" aria-labelledby="strongest-evidence-title">
-          <p className="font-mono text-[8px] uppercase tracking-[0.22em] text-sky-400">Supporting evidence</p>
-          <h2 id="strongest-evidence-title" className="mt-2 text-lg font-medium tracking-[-0.025em] text-white">What the strongest passages establish</h2>
+      <section className="mt-8 border-t border-white/[0.07] pt-7" aria-labelledby="strongest-evidence-title">
+        <p className="font-mono text-[8px] uppercase tracking-[0.22em] text-sky-400">Supporting evidence</p>
+        <h2 id="strongest-evidence-title" className="mt-2 text-lg font-medium tracking-[-0.025em] text-white">What the strongest passages establish</h2>
+        {strongestEvidence.length > 0 ? (
           <div className="mt-4 divide-y divide-white/[0.07] border-y border-white/[0.07]">
             {strongestEvidence.map((item) => (
               <div key={item.citation.id} className="grid gap-3 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
                 <div>
                   <p className="text-sm font-medium text-slate-200">{item.title}</p>
                   <blockquote className="mt-2 text-sm leading-6 text-slate-300">“{item.quote}”</blockquote>
-                  <p className="mt-2 text-xs leading-5 text-slate-500"><span className="text-slate-400">Supports:</span> {item.supports}</p>
+                  <p className="mt-2 text-xs leading-5 text-slate-500"><span className="text-slate-400">Linked conclusion:</span> {item.supports}</p>
                   <p className="mt-2 font-mono text-[9px] uppercase tracking-[0.1em] text-slate-500">{documentTitle(item.citation.documentName)} · p.{item.citation.page ?? "?"}</p>
                 </div>
                 <CitationLinks citationIds={[item.citation.id]} citations={citations} session={session} limit={1} claim={item.supports} relationships={item.relationships} />
               </div>
             ))}
           </div>
-        </section>
-      ) : null}
+        ) : (
+          <p className="mt-4 border-y border-white/[0.07] py-5 text-sm leading-6 text-slate-500">
+            No individual passage was strong and distinct enough to drive the conclusion on its own.
+          </p>
+        )}
+      </section>
 
       <ProcessDisclosure session={session} />
     </article>
@@ -254,54 +261,106 @@ export function selectStrongestEvidenceItems(
       const citation = citations.find((item) => item.id === id);
       if (!citation) return null;
       const quote = citation.exactQuote ?? selectNarrowEvidenceQuote(citation.excerpt) ?? citation.excerpt;
+      const relationships = finding.relationships.filter((relationship) => relationship.citationId === citation.id);
+      const hasSupportRelationship = relationships.some((relationship) => relationship.relationshipType === "supports");
+      const legacyCompatibleSupport = investigation.findings.every((item) => item.relationships.length === 0) &&
+        evidenceGenerallySupportsFinding(finding.statement, quote);
+      if (
+        quote.length < 20 ||
+        /\?$/.test(quote.trim()) ||
+        !isCompleteEvidenceQuote(quote) ||
+        (!hasSupportRelationship && !legacyCompatibleSupport)
+      ) return null;
       return {
         citation,
         quote,
         supports: finding.statement,
-        title: evidenceTitle(quote),
+        title: evidenceTitle(finding.theme),
         dimension: finding.dimension,
+        theme: finding.theme,
         priorityScore: finding.priorityScore,
-        relationships: finding.relationships.filter((relationship) => relationship.citationId === citation.id),
-        family: semanticFamily(`${finding.statement} ${quote}`),
+        relationships,
+        evidenceScore: finding.priorityScore
+          + Number(finding.priority === "Primary finding") * 3
+          + Number(relationships.some((relationship) => relationship.confidence === "high") || legacyCompatibleSupport) * 2
+          + questionRelevanceScore(question, quote, finding.statement)
+          + Number(/\b\d+(?:\.\d+)?\s*(?:%|mg|g\/dL|ng\/mL|ms|weeks?|months?)\b|\bp\s*[=<]/i.test(quote)) * 2
+          + Number(/\b(?:follow-up|after|versus|compared|remained|persisted)\b|\bfrom\b.{1,40}\bto\b/i.test(quote)) * 3
+          - Number(/^(?:baseline|initial)\b/i.test(quote)) * 2,
       };
     }))
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
-    .sort((left, right) => right.priorityScore - left.priorityScore);
-  const requested = [
-    /efficacy|effective|response|improv|outcome|treatment/i.test(question) ? "efficacy" as const : null,
-    /safety|safe|adverse|risk|harm|interaction/i.test(question) ? "safety" as const : null,
-    /limitation|uncertain|missing|unresolved|gap/i.test(question) ? "limitation" as const : null,
-  ].filter((value): value is NonNullable<typeof value> => Boolean(value));
+    .sort((left, right) => right.evidenceScore - left.evidenceScore);
+  const requestedThemes = Array.from(new Set(investigation.findings.map((finding) => finding.theme)));
+  const documentCount = new Set(candidates.map((candidate) => candidate.citation.documentId)).size;
+  const targetCount = Math.min(6, Math.max(3, requestedThemes.length + Number(documentCount >= 4)));
   const selected: typeof candidates = [];
   const usedSources = new Set<string>();
-  const usedFamilies = new Set<string>();
+  const usedDocuments = new Set<string>();
 
   const add = (candidate: typeof candidates[number] | undefined) => {
-    if (!candidate) return;
+    if (!candidate) return false;
     const key = `${candidate.citation.documentId}:${candidate.citation.page ?? "na"}:${candidate.citation.startOffset ?? candidate.quote}`;
-    if (usedSources.has(key) || usedFamilies.has(candidate.family)) return;
+    const repeatsSelectedEvidence = selected.some((item) =>
+      areSemanticallyEquivalent(item.quote, candidate.quote),
+    );
+    if (usedSources.has(key) || repeatsSelectedEvidence) return false;
     selected.push(candidate);
     usedSources.add(key);
-    usedFamilies.add(candidate.family);
+    usedDocuments.add(candidate.citation.documentId);
+    return true;
   };
-  for (const dimension of requested) add(candidates.find((candidate) => candidate.dimension === dimension));
+  for (const theme of requestedThemes) {
+    const scoped = candidates.filter((candidate) => candidate.theme === theme);
+    if (!add(scoped.find((candidate) => !usedDocuments.has(candidate.citation.documentId)))) {
+      add(scoped[0]);
+    }
+  }
   for (const candidate of candidates) {
-    if (selected.length >= 3) break;
+    if (selected.length >= targetCount) break;
+    if (usedDocuments.has(candidate.citation.documentId) || candidate.evidenceScore < 4) continue;
     add(candidate);
   }
-  return selected.slice(0, 3);
+  for (const candidate of candidates) {
+    if (selected.length >= targetCount) break;
+    if (candidate.evidenceScore < 4) continue;
+    add(candidate);
+  }
+  return selected.slice(0, targetCount);
 }
 
-function evidenceTitle(quote: string) {
-  if (/\bhemoglobin\b|\bferritin\b|hematologic/i.test(quote)) return "Laboratory treatment response";
-  if (/\bfatigue\b|symptom.{0,25}improv/i.test(quote)) return "Symptom response at follow-up";
-  if (/remains? low|persisted|not (?:formally )?excluded|unresolved/i.test(quote)) return "Remaining limitation";
-  if (/\bqt(?:c)?\b|qt[- ]prolong/i.test(quote)) return "QT-related warning";
-  if (/orthostatic|tachycardia/i.test(quote)) return "Orthostatic symptom concern";
-  if (/absorption|iron/i.test(quote)) return "Medication absorption concern";
-  if (/bleeding|blood loss/i.test(quote)) return "Bleeding-risk consideration";
-  if (/follow-up|improved|decreased|increased/i.test(quote)) return "Follow-up observation";
-  return "Source-supported observation";
+function isCompleteEvidenceQuote(quote: string) {
+  const value = quote.replace(/\s+/g, " ").trim();
+  return !/\b(?:and|or|that|which|because|with|from|to|of|initial|provided|including|following|ongoing)\s*[,:;.-]*$/i.test(value)
+    && !/\bstudy\b.*\benrolling\b.*\b(?:chronic|acute|neuropathic|clinical|moderate|severe)\s*[.]*$/i.test(value);
+}
+
+function questionRelevanceScore(question: string, quote: string, finding: string) {
+  const stopWords = new Set([
+    "about", "after", "across", "could", "does", "from", "have", "into", "should", "that", "their", "these", "this", "what", "when", "which", "with",
+  ]);
+  const questionTokens = Array.from(new Set(
+    question.toLowerCase().match(/[a-z][a-z0-9-]{3,}/g)?.filter((token) => !stopWords.has(token)) ?? [],
+  ));
+  const evidenceText = `${quote} ${finding}`.toLowerCase();
+  const matches = questionTokens.filter((token) => evidenceText.includes(token)).length;
+  return Math.min(4, matches);
+}
+
+function evidenceTitle(theme: string) {
+  return theme.trim() || "Source-supported observation";
+}
+
+function evidenceGenerallySupportsFinding(finding: string, quote: string) {
+  const findingTokens = semanticTopics(finding);
+  const quoteTokens = semanticTopics(quote);
+  const shared = findingTokens.filter((token) => quoteTokens.includes(token)).length;
+  const findingNumbers: string[] = finding.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+  const quoteNumbers: string[] = quote.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+  const numbersCompatible = findingNumbers.length === 0 ||
+    quoteNumbers.length === 0 ||
+    findingNumbers.some((value) => quoteNumbers.includes(value));
+  return numbersCompatible && shared >= Math.min(2, Math.max(1, findingTokens.length));
 }
 
 function createExportSections(investigation: ReturnType<typeof buildInvestigationData>) {

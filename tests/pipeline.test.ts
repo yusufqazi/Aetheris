@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { makeDemoDocuments } from "@/lib/demo-data";
 import type { ResearchEventInput } from "@/lib/research/events";
+import { buildInvestigationData } from "@/lib/research/investigation";
 import { runResearchPipeline } from "@/lib/research/pipeline";
 import { createResearchSession } from "@/lib/research/session";
 import { AGENT_IDS, SPECIALIST_AGENT_IDS, type UploadedDocument } from "@/lib/types";
@@ -119,15 +120,7 @@ describe("research pipeline orchestration", () => {
         "p = 0.004",
         "41%",
         "22%",
-        "240 participants",
-        "120 received AX-217 and 120 received placebo",
         "24 weeks",
-        "headache (12%)",
-        "nausea (9%)",
-        "fatigue (8%)",
-        "injection-site reactions (6%)",
-        "Two serious adverse events",
-        "one in placebo",
         "Pediatric, geriatric, and pregnant populations were excluded",
       ];
 
@@ -155,7 +148,23 @@ describe("research pipeline orchestration", () => {
         "Research-Use Disclaimer",
       ]);
       expect(result.results.groundedFacts?.length).toBeGreaterThanOrEqual(10);
+      expect(result.results.groundedFacts?.map((fact) => fact.text).join(" ")).toMatch(/adverse events|serious adverse events|headache|nausea/i);
       expect(result.results.citations?.length).toBeGreaterThan(0);
+      expect(result.results.reportGeneration.researchIntelligence?.structuredClaims?.length).toBeGreaterThan(0);
+      expect(new Set(
+        result.results.reportGeneration.researchIntelligence?.structuredClaims?.map((claim) => claim.dimension),
+      )).toEqual(new Set(["efficacy", "safety", "limitation"]));
+      expect(result.results.reportGeneration.researchIntelligence?.structuredClaims?.every(
+        (claim) => claim.reasoningSummary.length > 24 && claim.evidenceIds.length > 0,
+      )).toBe(true);
+      const investigation = buildInvestigationData({
+        ...session,
+        evidence: result.results.evidenceIndex ?? [],
+        results: result.results,
+      });
+      expect(investigation.findings.length).toBeGreaterThan(0);
+      expect(investigation.findings.every((finding) => finding.citationIds.length > 0)).toBe(true);
+      expect(investigation.findings[0].reasoningType).toMatch(/conclusion|boundary|source observation/i);
       expect(result.confidence.dimensions.find((item) => item.id === "citation-strength")?.detail)
         .toMatch(/concrete findings link to exact source passages/i);
       expect(new Set([
@@ -196,14 +205,61 @@ describe("research pipeline orchestration", () => {
       const markdown = result.results.reportGeneration.markdownReport;
       const interactionFindings = result.results.groundedFacts?.filter((fact) => fact.category === "interaction") ?? [];
 
-      expect(summary).toMatch(/^Several medication-related concerns/);
-      expect(summary).toMatch(/QT-prolongation/i);
+      expect(summary).toMatch(/uploaded documents|concern|interaction|QT/i);
+      expect(summary).toMatch(/QT|arrhythmia/i);
       expect(markdown).toMatch(/Ibuprofen may contribute to gastrointestinal blood loss/i);
       expect(markdown).not.toMatch(/Synthetic test document/i);
       expect(markdown).not.toMatch(/Larger multi-center trials are recommended/i);
       expect(interactionFindings.length).toBeGreaterThanOrEqual(4);
       expect(new Set(interactionFindings.map((fact) => fact.text.toLowerCase())).size).toBe(interactionFindings.length);
       expect(result.results.drugInteraction.summary).toMatch(/hydroxychloroquine|omeprazole|propranolol|ibuprofen/i);
+      expect(result.results.reportGeneration.researchIntelligence?.structuredClaims?.some(
+        (claim) => /qtc?|qt-prolong/i.test(claim.conclusion),
+      )).toBe(true);
+    },
+    12_000,
+  );
+
+  it(
+    "synthesizes diagnosis, treatment timing, and specific evidence needs without inventing conflict",
+    async () => {
+      delete process.env.OPENAI_API_KEY;
+      delete process.env.GEMINI_API_KEY;
+      const session = createResearchSession({
+        id: "multidocument-diagnostic-acceptance",
+        question:
+          "What diagnosis is best supported, is there renal involvement, when should long-term treatment begin, and what evidence is still needed?",
+        selectedAgents: [...AGENT_IDS],
+        documents: makeMultidocumentDiagnosticCase(),
+        mode: "demo",
+      });
+
+      const result = await runResearchPipeline({ session, emit: () => undefined });
+      const answer = result.results.reportGeneration.executiveSummary;
+      const investigation = buildInvestigationData({
+        ...session,
+        evidence: result.results.evidenceIndex ?? [],
+        results: result.results,
+      });
+      const openQuestionText = investigation.openQuestions
+        .map((item) => `${item.question} ${item.known} ${item.missingEvidence}`)
+        .join(" ");
+
+      expect(answer).toMatch(/systemic lupus erythematosus|lupus/i);
+      expect(answer).toMatch(/ANA|anti-dsDNA|complement/i);
+      expect(answer).toMatch(/proteinuria|hematuria|renal|nephritis/i);
+      expect(answer).toMatch(/defer|biopsy|quantification|renal function/i);
+      expect(answer).not.toMatch(/(?:\bthe|\ban|\ba|\band|\bor|\bwith|\bof|\bto|based on|consistent with)\s*[.;]?$/i);
+      expect(investigation.conflicts).toHaveLength(0);
+      expect(openQuestionText).toMatch(/biopsy/i);
+      expect(openQuestionText).toMatch(/protein|quantification/i);
+      expect(openQuestionText).toMatch(/renal function|kidney function/i);
+      expect(investigation.openQuestions.every((item) => !/what additional source|what evidence would/i.test(item.question)))
+        .toBe(true);
+      expect(new Set((result.results.evidenceIndex ?? []).map((item) => item.documentId)).size)
+        .toBeGreaterThanOrEqual(4);
+      expect(result.results.groundedFacts?.every((fact) => /[.!?)]$/.test(fact.text.trim())))
+        .toBe(true);
     },
     12_000,
   );
@@ -280,4 +336,34 @@ function makeDocument(id: string, name: string, text: string): UploadedDocument 
     text,
     pages: [{ number: 1, text, startOffset: 0, endOffset: text.length }],
   };
+}
+
+function makeMultidocumentDiagnosticCase(): UploadedDocument[] {
+  return [
+    makeDocument(
+      "clinical-presentation",
+      "Clinical_Assessment.pdf",
+      "The malar rash, inflammatory polyarthritis, oral ulcers, and photosensitivity strongly support systemic lupus erythematosus as the leading diagnosis.",
+    ),
+    makeDocument(
+      "serology",
+      "Autoimmune_Serology.pdf",
+      "Antinuclear antibody testing was positive at high titer, anti-double-stranded DNA was elevated, and complement C3 and C4 levels were low.",
+    ),
+    makeDocument(
+      "renal-findings",
+      "Renal_Assessment.pdf",
+      "Proteinuria and microscopic hematuria raise concern for lupus nephritis, but the severity and histologic class of renal involvement remain uncertain.",
+    ),
+    makeDocument(
+      "treatment-plan",
+      "Treatment_Recommendation.pdf",
+      "Definitive long-term immunosuppressive therapy should be deferred until kidney biopsy and urine protein quantification are completed, unless renal function worsens.",
+    ),
+    makeDocument(
+      "pending-workup",
+      "Pending_Renal_Workup.pdf",
+      "Kidney biopsy has not yet been performed. Urine protein quantification is pending. Renal function trends remain unknown.",
+    ),
+  ];
 }

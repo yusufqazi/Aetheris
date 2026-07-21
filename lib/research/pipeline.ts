@@ -34,11 +34,11 @@ import {
   type TrialSummarizerAgentOutput,
 } from "@/lib/types";
 
-const DOMAIN_QUERIES: Record<(typeof SPECIALIST_AGENT_IDS)[number], string> = {
-  "literature-search": "source excerpts study findings evidence results",
-  "drug-interaction": "drug interaction coadministration exposure pharmacokinetic CYP inhibitor inducer",
-  "adverse-reaction": "adverse event safety warning contraindication toxicity tolerability",
-  "trial-summarizer": "trial methods population endpoint results follow-up limitation statistical",
+const SPECIALIST_RESEARCH_TASKS: Record<(typeof SPECIALIST_AGENT_IDS)[number], string> = {
+  "literature-search": "Find the passages that most directly answer the question, including changes over time and the basis for any documented decision.",
+  "drug-interaction": "If the current documents contain relevant treatments or exposures, find interaction, compatibility, dose, timing, and monitoring evidence. Otherwise do not infer an interaction topic.",
+  "adverse-reaction": "Find current-source evidence of harms, constraints, contraindications, complications, tolerability, and risk-related monitoring that bears on the question.",
+  "trial-summarizer": "Find methods, population, comparisons, outcomes, follow-up, and evidence limitations that change how the current question should be interpreted.",
 };
 
 const DEMO_COMPLETION_DELAY: Record<(typeof SPECIALIST_AGENT_IDS)[number], number> = {
@@ -170,7 +170,7 @@ export async function runResearchPipeline({
         return [agentId, { chunks: [] as SearchChunk[], method: evidenceIndex.method }] as const;
       }
 
-      const query = `${session.question}\nSpecialist focus: ${DOMAIN_QUERIES[agentId]}`;
+      const query = `${session.question}\nSpecialist task: ${SPECIALIST_RESEARCH_TASKS[agentId]}`;
       const result = await retrieveFromIndex(evidenceIndex, query, 10);
       await emit({
         type: "stage.progress",
@@ -184,6 +184,11 @@ export async function runResearchPipeline({
       });
       return [agentId, result] as const;
     }),
+  );
+  const broadRetrieval = await retrieveFromIndex(
+    evidenceIndex,
+    session.question,
+    Math.min(32, Math.max(12, chunks.length)),
   );
   const retrievals = Object.fromEntries(retrievalEntries) as Record<
     (typeof SPECIALIST_AGENT_IDS)[number],
@@ -210,9 +215,15 @@ export async function runResearchPipeline({
   });
 
   const evidence = mergeEvidence(
-    retrievalEntries.flatMap(([agentId, result]) =>
-      chunksToEvidence(result.chunks, `Ranked for ${agentLabel(agentId)}`),
-    ),
+    [
+      ...retrievalEntries.flatMap(([agentId, result]) =>
+        chunksToEvidence(result.chunks, `Ranked for ${agentLabel(agentId)}`),
+      ),
+      ...chunksToEvidence(
+        broadRetrieval.chunks,
+        "Ranked against the complete research question",
+      ),
+    ],
   );
   const groundedFacts = extractGroundedFacts(evidence, session.question);
   await emit({
@@ -492,13 +503,41 @@ async function runSpecialist(
 }
 
 function mergeEvidence(items: EvidenceItem[]) {
-  return Array.from(new Map(items.map((item) => [item.chunkId, item])).values())
+  const ranked = Array.from(new Map(items.map((item) => [item.chunkId, item])).values())
     .sort((left, right) => {
       const leftScore = left.similarityScore ?? left.lexicalScore;
       const rightScore = right.similarityScore ?? right.lexicalScore;
       return rightScore - leftScore;
-    })
-    .slice(0, 24);
+    });
+  const selected: EvidenceItem[] = [];
+  const selectedChunks = new Set<string>();
+  const selectedDocuments = new Set<string>();
+  const add = (item: EvidenceItem) => {
+    if (selected.length >= 24 || selectedChunks.has(item.chunkId)) return;
+    selected.push(item);
+    selectedChunks.add(item.chunkId);
+    selectedDocuments.add(item.documentId);
+  };
+
+  const documents = Array.from(new Set(ranked.map((item) => item.documentId)));
+  const byDocument = new Map(documents.map((documentId) => [
+    documentId,
+    ranked.filter((item) => item.documentId === documentId),
+  ]));
+
+  // Round-robin the strongest passages from every source before filling the
+  // remaining budget. This prevents a polished summary from crowding out the
+  // underlying notes, laboratory records, consultations, or follow-up sources.
+  for (let depth = 0; depth < 3 && selected.length < 24; depth += 1) {
+    for (const documentId of documents) {
+      const item = byDocument.get(documentId)?.[depth];
+      if (item) add(item);
+    }
+  }
+  for (const item of ranked) add(item);
+  return selected.sort((left, right) =>
+    (right.similarityScore ?? right.lexicalScore) - (left.similarityScore ?? left.lexicalScore),
+  );
 }
 
 async function emitAgentSkipped(emit: PipelineEmitter, agentId: AgentId) {

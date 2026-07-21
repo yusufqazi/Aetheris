@@ -1,6 +1,7 @@
 "use client";
 
 import { ChevronDown, FileSearch, Quote, X } from "lucide-react";
+import type { ReactNode } from "react";
 
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import { documentTitle } from "@/components/workspace/report/CitationLinks";
@@ -132,7 +133,20 @@ export function WorkspaceInspector() {
                   View full page text
                   <ChevronDown className="h-3.5 w-3.5 text-slate-700 transition group-open:rotate-180" />
                 </summary>
-                <pre className="max-h-[28rem] overflow-auto whitespace-pre-wrap border-t border-white/[0.06] py-4 font-sans text-[11px] leading-6 text-slate-600">{source.pageText}</pre>
+                <HighlightedPageText
+                  pageText={source.pageText}
+                  ranges={views
+                    .filter((view) =>
+                      view.citation.documentId === source.citation.documentId &&
+                      view.citation.page === source.citation.page &&
+                      view.startOffset !== null &&
+                      view.endOffset !== null,
+                    )
+                    .map((view) => ({
+                      startOffset: view.startOffset as number,
+                      endOffset: view.endOffset as number,
+                    }))}
+                />
               </details>
             ) : null}
 
@@ -188,12 +202,62 @@ function buildEvidenceViews(
       pageText,
       quote: span?.quote ?? candidate ?? "No narrow exact quote was available for this legacy evidence record.",
       positioned: Boolean(span),
+      startOffset: span?.startOffset ?? null,
+      endOffset: span?.endOffset ?? null,
       context: span ? surroundingEvidenceContext(pageText, span.startOffset, span.endOffset) : { before: "", after: "" },
       claim: selectedClaim ?? matchingFact(session, citation)?.text ?? citation.relevance ?? "The selected analytical finding.",
       relationship,
       importedAt: document?.uploadedAt ? new Date(document.uploadedAt).toLocaleDateString() : "Unavailable",
     };
   });
+}
+
+function HighlightedPageText({
+  pageText,
+  ranges,
+}: {
+  pageText: string;
+  ranges: Array<{ startOffset: number; endOffset: number }>;
+}) {
+  const merged = ranges
+    .map((range) => ({
+      startOffset: Math.max(0, Math.min(pageText.length, range.startOffset)),
+      endOffset: Math.max(0, Math.min(pageText.length, range.endOffset)),
+    }))
+    .filter((range) => range.endOffset > range.startOffset)
+    .sort((left, right) => left.startOffset - right.startOffset)
+    .reduce<Array<{ startOffset: number; endOffset: number }>>((accepted, range) => {
+      const previous = accepted.at(-1);
+      if (previous && range.startOffset <= previous.endOffset) {
+        previous.endOffset = Math.max(previous.endOffset, range.endOffset);
+      } else {
+        accepted.push({ ...range });
+      }
+      return accepted;
+    }, []);
+  const content: ReactNode[] = [];
+  let cursor = 0;
+  for (const range of merged) {
+    if (range.startOffset > cursor) {
+      content.push(pageText.slice(cursor, range.startOffset));
+    }
+    content.push(
+      <mark
+        key={`${range.startOffset}:${range.endOffset}`}
+        className="rounded bg-sky-400/[0.16] px-0.5 text-sky-100 ring-1 ring-inset ring-sky-300/15"
+      >
+        {pageText.slice(range.startOffset, range.endOffset)}
+      </mark>,
+    );
+    cursor = range.endOffset;
+  }
+  if (cursor < pageText.length) content.push(pageText.slice(cursor));
+
+  return (
+    <pre className="max-h-[28rem] overflow-auto whitespace-pre-wrap border-t border-white/[0.06] py-4 font-sans text-[11px] leading-6 text-slate-600">
+      {content.length > 0 ? content : pageText}
+    </pre>
+  );
 }
 
 function evidenceSections(views: ReturnType<typeof buildEvidenceViews>) {

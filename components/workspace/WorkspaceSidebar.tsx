@@ -5,11 +5,14 @@ import { usePathname } from "next/navigation";
 import {
   Archive,
   Clock3,
+  LogOut,
   Plus,
   Settings,
+  UserRound,
 } from "lucide-react";
 
 import { BrandMark } from "@/components/BrandMark";
+import { useAuth } from "@/components/auth/AuthProvider";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 
 const NAV_ITEMS = [
@@ -19,6 +22,7 @@ const NAV_ITEMS = [
 export function WorkspaceSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { sessions } = useWorkspace();
+  const { user, loading, signOut } = useAuth();
   const recentSessions = sessions.slice(0, 4);
 
   return (
@@ -111,6 +115,31 @@ export function WorkspaceSidebar({ onNavigate }: { onNavigate?: () => void }) {
       </div>
 
       <div className="mt-3 border-t border-white/[0.07] pt-3">
+        {loading ? null : user ? (
+          <div className="mb-2 rounded-[0.9rem] border border-white/[0.07] bg-white/[0.025] px-3 py-2.5">
+            <div className="flex items-center gap-2.5">
+              <UserRound className="h-4 w-4 shrink-0 text-sky-300" />
+              <p title={user.email} className="min-w-0 flex-1 truncate text-xs text-slate-300">{user.email}</p>
+              <button
+                type="button"
+                onClick={() => void signOut()}
+                className="rounded-full p-1 text-slate-500 transition hover:bg-white/[0.07] hover:text-white"
+                aria-label="Sign out"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <Link
+            href="/sign-in"
+            onClick={onNavigate}
+            className="mb-2 flex items-center gap-3 rounded-[0.9rem] px-3 py-2.5 text-sm text-sky-300 transition hover:bg-sky-400/[0.06] hover:text-sky-100"
+          >
+            <UserRound className="h-4 w-4" />
+            Sign in to save work
+          </Link>
+        )}
         <Link
           href="/settings"
           onClick={onNavigate}

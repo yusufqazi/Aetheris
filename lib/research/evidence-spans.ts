@@ -39,7 +39,7 @@ export function findExactEvidenceSpan(pageText: string, candidateQuote: string):
 export function getSessionCitations(session: ResearchSession): Citation[] {
   const persisted = session.results?.citations ?? session.results?.reportGeneration.citations ?? [];
   return createClaimCitations(
-    session.evidence,
+    session.evidence ?? session.results?.evidenceIndex ?? [],
     session.results?.groundedFacts ?? [],
     session.documents,
     persisted,

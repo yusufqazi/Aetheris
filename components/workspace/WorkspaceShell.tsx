@@ -5,6 +5,7 @@ import { Menu, X } from "lucide-react";
 import { useState } from "react";
 
 import { BrandMark } from "@/components/BrandMark";
+import { GuestWorkspaceBanner } from "@/components/auth/GuestWorkspaceBanner";
 import { WorkspaceInspector } from "@/components/workspace/WorkspaceInspector";
 import { WorkspaceSidebar } from "@/components/workspace/WorkspaceSidebar";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
@@ -97,6 +98,8 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
           </motion.div>
         ) : null}
       </AnimatePresence>
+
+      <GuestWorkspaceBanner />
     </div>
   );
 }

@@ -4,38 +4,59 @@ import { normalizeResearchSession } from "@/lib/research/session";
 import type { ResearchSession } from "@/lib/types";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+// Supabase now calls this a Publishable Key. Retain the legacy anon variable
+// so existing deployments continue to work during migration.
+const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+  ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+let browserClient: ReturnType<typeof createClient> | null | undefined;
+let sessionsTableRetryAfter = 0;
+let missingTableWarningLogged = false;
 
 export function isSupabaseConfigured() {
-  return Boolean(supabaseUrl && (serviceRoleKey || anonKey));
+  return Boolean(supabaseUrl && publishableKey);
 }
 
 export function createBrowserSupabaseClient() {
-  if (!supabaseUrl || !anonKey) {
+  if (!supabaseUrl || !publishableKey) {
     return null;
   }
 
-  return createClient(supabaseUrl, anonKey);
+  if (!browserClient) {
+    browserClient = createClient(supabaseUrl, publishableKey);
+  }
+  return browserClient;
 }
 
-function createAdminClient() {
-  if (!supabaseUrl || !serviceRoleKey) {
+function createUserRequestClient(accessToken: string | null | undefined) {
+  if (!supabaseUrl || !publishableKey || !accessToken) {
     return null;
   }
 
-  return createClient(supabaseUrl, serviceRoleKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
+  return createClient(supabaseUrl, publishableKey, {
+    global: {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
   });
 }
 
-export async function saveSessionToSupabase(session: ResearchSession) {
-  const supabase = createAdminClient();
+export async function saveSessionToSupabase(
+  session: ResearchSession,
+  accessToken?: string | null,
+) {
+  const supabase = createUserRequestClient(accessToken);
   if (!supabase) {
     return null;
   }
 
-  return supabase.from("research_sessions").upsert(
+  if (sessionsTableRetryAfter > Date.now()) {
+    return null;
+  }
+
+  const result = await supabase.from("research_sessions").upsert(
     {
       id: session.id,
       question: session.question,
@@ -57,45 +78,87 @@ export async function saveSessionToSupabase(session: ResearchSession) {
     },
     { onConflict: "id" },
   );
+  return handleSessionsTableResult(result);
 }
 
-export async function fetchSessionsFromSupabase() {
-  const supabase = createAdminClient();
+export async function fetchSessionsFromSupabase(accessToken?: string | null) {
+  const supabase = createUserRequestClient(accessToken);
   if (!supabase) {
     return [];
   }
 
-  const { data } = await supabase
+  if (sessionsTableRetryAfter > Date.now()) {
+    return [];
+  }
+
+  const result = await supabase
     .from("research_sessions")
     .select("*")
     .order("created_at", { ascending: false })
     .limit(20);
+  const { data } = handleSessionsTableResult(result);
 
   return (data ?? []).map(mapSessionRow);
 }
 
-export async function fetchSessionByIdFromSupabase(id: string) {
-  const supabase = createAdminClient();
+export async function fetchSessionByIdFromSupabase(id: string, accessToken?: string | null) {
+  const supabase = createUserRequestClient(accessToken);
   if (!supabase) {
     return null;
   }
 
-  const { data } = await supabase
+  if (sessionsTableRetryAfter > Date.now()) {
+    return null;
+  }
+
+  const result = await supabase
     .from("research_sessions")
     .select("*")
     .eq("id", id)
     .maybeSingle();
+  const { data } = handleSessionsTableResult(result);
 
   return data ? mapSessionRow(data) : null;
 }
 
-export async function deleteSessionFromSupabase(id: string) {
-  const supabase = createAdminClient();
+export async function deleteSessionFromSupabase(id: string, accessToken?: string | null) {
+  const supabase = createUserRequestClient(accessToken);
   if (!supabase) {
     return null;
   }
 
-  return supabase.from("research_sessions").delete().eq("id", id);
+  if (sessionsTableRetryAfter > Date.now()) {
+    return null;
+  }
+
+  const result = await supabase.from("research_sessions").delete().eq("id", id);
+  return handleSessionsTableResult(result);
+}
+
+export function isMissingResearchSessionsTableError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; message?: unknown };
+  const message = typeof candidate.message === "string" ? candidate.message : "";
+  return candidate.code === "PGRST205" || (
+    /research_sessions/i.test(message) &&
+    /schema cache|could not find the table|relation .* does not exist/i.test(message)
+  );
+}
+
+function handleSessionsTableResult<T extends { error: unknown }>(result: T): T {
+  if (!isMissingResearchSessionsTableError(result.error)) {
+    if (!result.error) sessionsTableRetryAfter = 0;
+    return result;
+  }
+
+  sessionsTableRetryAfter = Date.now() + 60_000;
+  if (!missingTableWarningLogged) {
+    missingTableWarningLogged = true;
+    console.error(
+      "[Aetheris Supabase] public.research_sessions is missing. Apply supabase/migrations/20260720203000_create_research_sessions.sql; remote checkpoints are paused for 60 seconds.",
+    );
+  }
+  return { ...result, error: null };
 }
 
 function mapSessionRow(row: Record<string, unknown>): ResearchSession {

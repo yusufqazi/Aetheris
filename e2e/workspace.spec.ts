@@ -31,7 +31,8 @@ test("demo report stays concise while preserving export and source inspection", 
     expect(citationBox!.y).toBeGreaterThanOrEqual(contentBox!.y + contentBox!.height);
   } else {
     await expect(page.getByRole("tab", { name: /Findings/ })).toBeVisible();
-    await expect(page.getByRole("tab", { name: /Conflicts/ })).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: /Conflicts 0/ })).toBeVisible();
+    await expect(page.getByRole("tab", { name: /Open Questions/ })).toBeVisible();
     await expect(page.getByRole("tab", { name: /Changes/ })).toHaveCount(0);
     const contentBox = await page.locator('[data-testid="finding-content"]:visible').first().boundingBox();
     const citationBox = await page.locator('[data-testid="finding-citations"]:visible').first().boundingBox();
@@ -70,14 +71,28 @@ test("demo report stays concise while preserving export and source inspection", 
   await expect(page.getByText("Interaction extraction", { exact: true })).toBeVisible();
 });
 
-test("a prior analysis can be deleted without leaving stale workspace entries", async ({ page }) => {
+test("guest research is not retained after a full reload", async ({ page }) => {
   await page.goto("/dashboard");
   await page.getByRole("button", { name: /Explore demo session/ }).click();
   await expect(page).toHaveURL(/\/research\//);
   await page.goto("/dashboard");
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: /Delete analysis:/ }).click();
   await expect(page.getByRole("heading", { name: "Start your first research session." })).toBeVisible();
+});
+
+test("the account entry validates email and makes guest persistence clear", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("link", { name: "Sign in", exact: true }).click();
+  await expect(page).toHaveURL(/\/sign-in$/);
+  await expect(page.getByRole("heading", { name: "Welcome back." })).toBeVisible();
+
+  await page.getByLabel("Email address").fill("not-an-email");
+  await page.getByLabel("Password").fill("researcher");
+  await page.getByRole("button", { name: "Sign in securely" }).click();
+  await expect(page.getByRole("status")).toHaveText("Enter a valid email address before continuing.");
+
+  await page.getByRole("button", { name: /Continue as guest/ }).click();
+  await expect(page).toHaveURL(/\/research\/new\?guest=1/);
+  await expect(page.getByRole("complementary", { name: "Guest workspace notice" })).toBeVisible();
 });
 
 test("balanced findings, conflicts, and open questions remain readable", async ({ page }, testInfo) => {
@@ -102,7 +117,7 @@ test("balanced findings, conflicts, and open questions remain readable", async (
     expect(citationButtonBox!.x).toBeGreaterThanOrEqual(contentBox!.x + contentBox!.width);
     expect(citationButtonBox!.x + citationButtonBox!.width).toBeLessThanOrEqual(citationBox!.x + citationBox!.width);
     await page.getByRole("tab", { name: /Conflicts/ }).click();
-    await expect(page.locator("p:visible").filter({ hasText: /medication records describe omeprazole/i })).toBeVisible();
+    await expect(page.locator("p:visible").filter({ hasText: /medication records describe omeprazole/i }).first()).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("conflicts.png"), fullPage: true });
     await page.getByRole("tab", { name: /Open Questions/ }).click();
   } else {
@@ -111,7 +126,7 @@ test("balanced findings, conflicts, and open questions remain readable", async (
     expect(citationsBox!.y).toBeGreaterThanOrEqual(contentBox!.y + contentBox!.height);
     const conflictDetails = page.locator("details").filter({ hasText: /^Conflicts/ }).first();
     await conflictDetails.locator("summary").click();
-    await expect(conflictDetails.getByText(/medication records describe omeprazole/i)).toBeVisible();
+    await expect(conflictDetails.getByText(/medication records describe omeprazole/i).first()).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("conflicts.png"), fullPage: true });
     const questionDetails = page.locator("details").filter({ hasText: /^Open Questions/ }).first();
     await questionDetails.locator("summary").first().click();
@@ -136,7 +151,7 @@ function makeBalancedResultsSession(): ResearchSession {
   const session = makeDemoSession();
   session.id = "balanced-results-session";
   session.question = "Assess treatment efficacy, safety, and limitations.";
-  const records: Array<{ type: ResearchContentType; text: string }> = [
+  const records: Array<{ type: ResearchContentType; text: string; documentIndex?: number }> = [
     { type: "finding", text: "Baseline ferritin: 6 ng/mL." },
     { type: "limitation", text: "Follow-up ferritin: 14 ng/mL after four weeks; ferritin remains low." },
     { type: "longitudinal_change", text: "Hemoglobin increased from 8.7 to 10.4 g/dL after four weeks." },
@@ -145,13 +160,14 @@ function makeBalancedResultsSession(): ResearchSession {
     { type: "longitudinal_change", text: "Follow-up QTc improved from 477 ms to 449 ms, but ongoing ECG surveillance may be prudent." },
     { type: "limitation", text: "Heavy menstrual bleeding persisted during follow-up." },
     { type: "limitation", text: "Gastrointestinal blood loss was not formally excluded." },
+    { type: "finding", text: "The medication list records omeprazole for use as needed.", documentIndex: 1 },
     { type: "discrepancy", text: "Medication records describe omeprazole as needed, whereas the clinical history reports use 5-6 days per week." },
     { type: "unresolved_question", text: "Will ferritin normalize with oral therapy alone?" },
     { type: "unresolved_question", text: "Are palpitations entirely secondary to anemia?" },
     { type: "unresolved_question", text: "What is the definitive source of blood loss?" },
     { type: "unresolved_question", text: "Definitive source of blood loss?" },
   ];
-  const pageText = records.map((record) => record.text).join("\n");
+  const pageText = records.filter((record) => record.documentIndex !== 1).map((record) => record.text).join("\n");
   const document = {
     ...session.documents[0],
     id: "document:balanced",
@@ -160,19 +176,31 @@ function makeBalancedResultsSession(): ResearchSession {
     pageCount: 1,
     pages: [{ number: 1, text: pageText, startOffset: 0, endOffset: pageText.length }],
   };
-  session.documents = [document];
-  const facts: GroundedFact[] = records.map((record, index) => ({
-    id: `fact:balanced:${index}`,
-    category: record.type === "discrepancy" || record.type === "unresolved_question" || record.type === "limitation" ? "limitation" : "efficacy",
-    contentType: record.type,
-    text: record.text,
-    evidenceId: `evidence:balanced:${index}`,
-    documentId: document.id,
-    documentName: document.name,
-    page: 1,
-    excerpt: record.text,
-    relevance: "Directly relevant follow-up evidence.",
-  }));
+  const medicationText = records.filter((record) => record.documentIndex === 1).map((record) => record.text).join("\n");
+  const medicationDocument = {
+    ...session.documents[1],
+    id: "document:medication-list",
+    name: "Medication_List.pdf",
+    text: medicationText,
+    pageCount: 1,
+    pages: [{ number: 1, text: medicationText, startOffset: 0, endOffset: medicationText.length }],
+  };
+  session.documents = [document, medicationDocument];
+  const facts: GroundedFact[] = records.map((record, index) => {
+    const source = record.documentIndex === 1 ? medicationDocument : document;
+    return {
+      id: `fact:balanced:${index}`,
+      category: record.type === "discrepancy" || record.type === "unresolved_question" || record.type === "limitation" ? "limitation" : "efficacy",
+      contentType: record.type,
+      text: record.text,
+      evidenceId: `evidence:balanced:${index}`,
+      documentId: source.id,
+      documentName: source.name,
+      page: 1,
+      excerpt: record.text,
+      relevance: "Directly relevant follow-up evidence.",
+    };
+  });
   session.evidence = facts.map((fact, index) => ({
     id: fact.evidenceId,
     chunkId: `chunk:balanced:${index}`,

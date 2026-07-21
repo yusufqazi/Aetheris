@@ -1,4 +1,5 @@
 import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
+import { openQuestionFromGap } from "@/lib/research/open-questions";
 import type {
   EvidenceItem,
   GroundedFact,
@@ -7,7 +8,11 @@ import type {
   ReportOutput,
 } from "@/lib/types";
 
-const CONCRETE_SIGNAL = /(?:\b\d+(?:\.\d+)?\s*%|\bp\s*[=<]\s*0?\.\d+|\b\d+(?:\.\d+)?\s+(?:participants?|patients?|subjects?|weeks?|months?|years?|events?|groups?|arms?|mg|g\/dL|ng\/mL|mmol\/L|ms)\b|\b[A-Za-z][A-Za-z /_-]{1,30}\s+\d+(?:\.\d+)?\s+(?:(?:to|→|->)\s+)?\d+(?:\.\d+)?\b|randomi[sz]ed|double-blind|placebo-controlled|primary endpoint|adverse events?|serious adverse|excluded|uncertain|does not prove|not establish|follow-up|recommended|quality-of-life|interaction|coadministration|concomitant|\bqtc?\b|absorption|blood loss|orthostatic|hemoglobin|ferritin|anemia|palpitations?|improved|decreased|increased|normalized|persisted|risk|concern|discrepancy|contradiction)/i;
+const CONCRETE_SIGNAL = /(?:\b\d+(?:\.\d+)?\s*%|\bp\s*[=<]\s*0?\.\d+|\b\d+(?:\.\d+)?\s+(?:participants?|patients?|subjects?|weeks?|months?|years?|events?|groups?|arms?|mg|mcg|mL|mmHg|bpm|ms)\b|\b[A-Za-z][A-Za-z /_-]{1,30}\s+\d+(?:\.\d+)?\s+(?:(?:to|→|->)\s+)?\d+(?:\.\d+)?\b|randomi[sz]ed|blind(?:ed)?|controlled|comparator|endpoint|adverse event|complication|excluded|uncertain|does not prove|not establish|follow-up|recommended|diagnos|disease|condition|syndrome|symptom|laborator|biomarker|imaging|procedure|treatment|therapy|medication|dose|improved|decreased|increased|normalized|persisted|progressed|resolved|risk|concern|discrepancy|contradiction)/i;
+const CLINICAL_MEASUREMENT = /\b\d+(?:\.\d+)?\s*(?:%|mg(?:\/kg)?|mcg|µg|ug|g\/dL|mg\/dL|ng\/mL|pg\/mL|mmol\/L|mEq\/L|U\/L|IU\/L|mg\/L|mmHg|bpm|ms|mL\/min|cells?\/µL|copies\/mL|cm|mm|weeks?|months?|years?)\b|\bp\s*[=<]\s*0?\.\d+/i;
+const CLINICAL_DECISION = /\b(?:proceed(?:ed|ing)?|begin|approve(?:d)?|initiat(?:e|ed|ing)|start(?:ed|ing)?|continu(?:e|ed|ing)|discontinu(?:e|ed|ing)|stop(?:ped|ping)?|hold|held|withhold(?:ing)?|withheld|delay(?:ed|ing)?|defer(?:red|ring)?|postpone(?:d|ment)?|switch(?:ed|ing)?|titrat(?:e|ed|ing)|escalat(?:e|ed|ing)|de-escalat(?:e|ed|ing)|favor(?:s|ed|ing)?|prioriti[sz](?:e|ed|ing)|administer(?:ed|ing)?|dose[- ]adjusted|dose (?:increased|decreased|reduced)|treatment was (?:recommended|approved|deferred|delayed))\b/i;
+const MONITORING_SIGNAL = /\b(?:monitor(?:ed|ing)?|repeat(?:ed)?|recheck(?:ed)?|surveillance|follow-up (?:testing|laboratory|imaging|ecg)|serial (?:laboratory|imaging|ecg)|recommended follow-up)\b/i;
+const CLINICAL_DOMAIN_SIGNAL = /\b(?:diagnos(?:is|ed)|disease|condition|syndrome|symptom|sign|biomarker|laborator(?:y|ies)|serolog(?:y|ic)|antibod(?:y|ies)|complement|assay|test(?:ing)?|result|positive|negative|elevated|decreased|low|high|abnormal|normal|patholog(?:y|ic)|biopsy|culture|quantification|measurement|protein(?:uria)?|hematuria|renal|kidney|organ|function|imaging|scan|radiograph|procedure|surgery|intervention|treatment|therapy|medication|drug|dose|specimen|lesion|mass|injury|infection)\b/i;
 const SOURCE_INSTRUCTION = /^(?:summarize|identify|explain|assess|generate|review|compare)\b/i;
 const BOILERPLATE = /^(?:synthetic test document|testing notice|patient\s+.+\bmrn\b)/i;
 const INTERACTION_FOCUS = /\b(?:drug|medication|interaction|contraindication|harmful|coadmin)/i;
@@ -25,14 +30,15 @@ export function extractGroundedFacts(evidence: EvidenceItem[], question: string)
       const excerpt = candidates[index].trim();
       const statement = excerpt.replace(/\s+/g, " ").trim();
       if (
-        statement.length < 18 ||
+        (statement.length < 18 && !CLINICAL_MEASUREMENT.test(statement)) ||
         statement.length > 560 ||
         isTruncatedCandidate(excerpt, index, candidates, item) ||
         isIncompleteStatement(statement) ||
         isStructuralNoise(statement) ||
         (SOURCE_INSTRUCTION.test(statement) && !CONCRETE_SIGNAL.test(statement)) ||
         BOILERPLATE.test(statement) ||
-        !CONCRETE_SIGNAL.test(statement)
+        !isCompleteClinicalProposition(statement) ||
+        !(CONCRETE_SIGNAL.test(statement) || CLINICAL_MEASUREMENT.test(statement) || CLINICAL_DECISION.test(statement) || MONITORING_SIGNAL.test(statement) || CLINICAL_DOMAIN_SIGNAL.test(statement) || isRecommendation(statement) || isPotentialInteractionStatement(statement))
       ) {
         continue;
       }
@@ -69,7 +75,7 @@ export function extractGroundedFacts(evidence: EvidenceItem[], question: string)
 
 function isIncompleteStatement(value: string) {
   if (/\.\.\.|…/.test(value)) return true;
-  if (/\b(?:and|or|that|which|because|with|from|to|of|frequent)\s*[,:;-]*$/i.test(value)) return true;
+  if (/\b(?:a|an|the|and|or|that|which|because|with|without|from|to|of|for|by|based on|consistent with|due to|including|following|frequent|initial|early|later|higher|lower)\s*[,:;-]*$/i.test(value)) return true;
   return /^(?:the\s+)?(?:first|second|third)\s+concern\s+is\s+that\b/i.test(value) && !/[.!?]$/.test(value);
 }
 
@@ -79,9 +85,12 @@ function isTruncatedCandidate(
   candidates: string[],
   evidence: EvidenceItem,
 ) {
+  if (index === 0 && evidence.contextBefore.trim()) {
+    const prior = evidence.contextBefore.trimEnd();
+    if (!/[.!?]["')\]]?$/.test(prior) && /^[a-z]/.test(excerpt)) return true;
+  }
   if (index !== candidates.length - 1 || /[.!?)]$/.test(excerpt)) return false;
-  const continuation = evidence.contextAfter.trimStart();
-  return continuation.length > 0 && /^[a-z]/.test(continuation);
+  return evidence.contextAfter.trim().length > 0;
 }
 
 export function factsByCategory(facts: GroundedFact[], ...categories: GroundedFactCategory[]) {
@@ -104,15 +113,25 @@ export function buildGroundedReport({
     (fact.contentType === "finding" || fact.contentType === "longitudinal_change") &&
     (fact.category === "efficacy" || fact.category === "statistical"),
   );
-  const safety = facts.filter((fact) => fact.contentType === "safety_observation");
+  const safety = facts.filter((fact) =>
+    fact.contentType === "safety_observation" ||
+    (fact.contentType === "longitudinal_change" && fact.category === "safety"),
+  );
+  const decisions = facts.filter((fact) =>
+    fact.contentType === "recommendation" && isClinicallyMaterialRecommendation(fact.text),
+  );
   const context = facts.filter((fact) => fact.contentType === "finding" && fact.category === "study-design");
+  const clinicalContext = facts.filter((fact) =>
+    (fact.contentType === "finding" || fact.contentType === "evidence_excerpt") &&
+    (fact.category === "context" || fact.category === "study-design"),
+  );
   const uncertainties = facts.filter((fact) =>
     fact.contentType === "limitation" || fact.contentType === "discrepancy",
   );
   const interactionFocused = INTERACTION_FOCUS.test(question);
   const keyFindings = uniqueFacts(interactionFocused
     ? [...interactions.slice(0, 6), ...efficacy.slice(0, 2)]
-    : [...efficacy.slice(0, 6), ...interactions.slice(0, 3)]).slice(0, 8);
+    : [...efficacy.slice(0, 6), ...interactions.slice(0, 3), ...decisions.slice(0, 2)]).slice(0, 8);
   const safetyFindings = uniqueFacts(safety).slice(0, 4);
   const contextFindings = uniqueFacts(context).slice(0, 3);
   const uncertaintyFindings = uniqueFacts(uncertainties).slice(0, 4);
@@ -121,6 +140,8 @@ export function buildGroundedReport({
     interactions,
     efficacy,
     safety,
+    decisions,
+    context: clinicalContext,
     uncertainties,
   });
   const missingEvidence = buildMissingEvidence(facts, interactionFocused);
@@ -176,21 +197,49 @@ export function isConcreteReport(report: ReportOutput, facts: GroundedFact[], qu
   const reportText = [report.executiveSummary, ...report.keyFindings].join(" ");
   const numericTokens = reportText.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
   const numbersGrounded = numericTokens.every((token) => sourceText.includes(token.toLowerCase()));
-  const topical = !INTERACTION_FOCUS.test(question) || /interaction|medication|drug|qtc?|absorption|coadministration/i.test(reportText);
+  const topical = !INTERACTION_FOCUS.test(question) || /interaction|medication|drug|exposure|coadministration/i.test(reportText);
   const uniqueFindings = new Set(report.keyFindings.map((finding) => normalizeForDeduplication(finding)));
   return numbersGrounded && topical && uniqueFindings.size === report.keyFindings.length;
 }
 
 function splitSourceStatements(text: string) {
-  const lines = text
-    .replace(/\s*\u2022\s*/g, "\n")
-    .split(/\n+/)
-    .map((statement) => statement.trim())
+  const blocks = text
+    .replace(/\s*\u2022\s*/g, "\n\n")
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
     .filter(Boolean);
-  return groupLikelyTableRows(lines)
-    .flatMap((line) => line.split(/(?<=[.!?])\s+(?=[A-Z0-9])/))
+  return blocks
+    .flatMap((block) => reflowSourceLines(groupLikelyTableRows(
+      block.split(/\n+/).map((line) => line.trim()).filter(Boolean),
+    )))
+    .flatMap((statement) => statement.split(/(?<=[.!?])\s+(?=[A-Z0-9(])/))
     .map((statement) => statement.trim())
-    .filter((statement) => statement.length >= 18 && /^[A-Z0-9(]/.test(statement));
+    .filter((statement) => statement.length >= 10 && /^[A-Z0-9(]/.test(statement));
+}
+
+function reflowSourceLines(lines: string[]) {
+  const statements: string[] = [];
+  let buffer = "";
+  const flush = () => {
+    if (buffer.trim()) statements.push(buffer.replace(/\s+/g, " ").trim());
+    buffer = "";
+  };
+
+  for (const line of lines) {
+    const structural = TABLE_HEADER.test(
+      line.replace(/[:|/\-]+/g, " ").replace(/\s+/g, " ").trim(),
+    );
+    if (structural) {
+      flush();
+      statements.push(line);
+      continue;
+    }
+    if (buffer && LEADING_LABEL.test(line)) flush();
+    buffer = buffer ? `${buffer} ${line}` : line;
+    if (/[.!?]["')\]]?$/.test(line)) flush();
+  }
+  flush();
+  return statements;
 }
 
 function groupLikelyTableRows(lines: string[]) {
@@ -230,19 +279,16 @@ export function classifyContentType(text: string): ResearchContentType {
   if (/\b(?:contradiction|discrepancy|inconsisten(?:t|cy)|conflicting|conflict between|differs? between|documentation differs|reported differently)\b|\b(?:document|record|note|history)\b.{0,80}\b(?:whereas|but|versus|vs\.?|differs?)\b/i.test(value)) {
     return "discrepancy";
   }
-  if (/\s(?:\+|plus)\s|combined with|drug interaction|medication-related|cumulative qt|qt[- ]prolong|coadmin|concomitant.{0,40}(?:medication|therapy|drug)|absorption.{0,40}(?:medication|therapy|dose)|interaction concern/i.test(value)) {
+  if (isPotentialInteractionStatement(value)) {
     return "interaction_concern";
   }
-  if (/^[A-Z][a-z][A-Za-z-]{3,}\b.{0,80}\b(?:may|can|could)\s+(?:increase|decrease|reduce|worsen|contribute|prolong|interfere|inhibit|induce)\b/i.test(value)) {
-    return "interaction_concern";
-  }
-  if (/limitation|uncertain|does not prove|not establish|unresolved|missing evidence|not formally exclude|small subgroup|limited (?:to|follow-up)|confidence intervals overlap|remains unknown|insufficient evidence|cannot determine|excluded|not represented/i.test(value)) {
+  if (/limitation|uncertain|does not prove|not establish|unresolved|missing evidence|not formally exclude|small subgroup|limited (?:to|follow-up)|confidence intervals overlap|remain(?:s|ed)? unknown|insufficient evidence|cannot determine|excluded|not represented|\bpending\b|\bawaited\b|not yet (?:performed|completed|obtained|measured|quantified|reported|available)|has not (?:yet )?(?:been )?(?:performed|completed|obtained|measured|quantified|reported)/i.test(value)) {
     return "limitation";
   }
   if (/randomi[sz]ed|double-blind|placebo-controlled|participants?|subjects?|primary endpoint|secondary endpoint|received .*placebo/i.test(value)) {
     return "finding";
   }
-  if (/adverse|headache|nausea|fatigue|dizziness|rash|injection-site|serious event|toxicity|palpitations|syncope|bleeding|orthostatic symptoms|safety signal/i.test(value)) {
+  if (/\b(?:adverse|harm|complication|toxicity|intoleran|worsen|deteriorat|safety signal|serious event|risk|concern|hazard|contraindicat|unsafe|feasibility|technically difficult)\b/i.test(value)) {
     return "safety_observation";
   }
   return CONCRETE_SIGNAL.test(value) ? "finding" : "evidence_excerpt";
@@ -264,7 +310,21 @@ function isQuestion(value: string) {
 }
 
 function isRecommendation(value: string) {
-  return /^(?:recommend(?:ed|ation)?|plan(?:ned)?|monitor|repeat|obtain|consider|continue|discontinue|start|stop|avoid|review|evaluate|assess|recheck|schedule|refer|confirm|verify)\b|\b(?:is|are|was|were) (?:recommended|needed)\b|\b(?:should|needs? to)\s+(?:be\s+)?(?:monitored|repeated|obtained|considered|reviewed|evaluated|confirmed|verified|stopped|started|avoided)\b/i.test(value);
+  return /^(?:recommend(?:ed|ation)?|plan(?:ned)?|proceed|begin|approve|monitor|repeat|obtain|consider|continue|discontinue|start|stop|hold|delay|defer|withhold|switch|titrate|avoid|favor|prioriti[sz]e|administer|review|evaluate|assess|recheck|schedule|refer|confirm|verify)\b|\b(?:is|are|was|were) (?:recommended|needed)\b|\b(?:should|needs? to)\s+(?:be\s+)?(?:proceed(?:ed)?|begun|begin|continued|discontinued|initiated|monitored|repeated|obtained|considered|reviewed|evaluated|confirmed|verified|stopped|started|held|delayed|deferred|withheld|avoided|administered|performed)\b|\b(?:recommend(?:s|ed)?|advis(?:es|ed)?)\b.{0,80}\b(?:proceed|begin|start|continue|hold|delay|defer|stop|switch|monitor|treatment|therapy|medication|drug|dose|dosing|regimen|indication|follow-up|testing|restricted)\b/i.test(value);
+}
+
+function isPotentialInteractionStatement(value: string) {
+  return /\s(?:\+|plus)\s|combined with|drug interaction|medication-related|coadmin|concomitant.{0,40}(?:medication|therapy|drug)|exposure.{0,40}(?:medication|therapy|dose)|interaction concern/i.test(value) ||
+    /^[A-Z][a-z][A-Za-z-]{3,}\b.{0,100}\b(?:may|can|could)\s+(?:increase|decrease|reduce|worsen|contribute|prolong|interfere|inhibit|induce|delay|blunt)\b/i.test(value);
+}
+
+export function isClinicallyMaterialRecommendation(value: string) {
+  const researchOnly = /\b(?:larger|additional|future|further)\b.{0,50}\b(?:study|studies|trial|trials|research|evidence)\b|\bmore research is needed\b/i.test(value);
+  return isRecommendation(value) && !researchOnly && (
+    CLINICAL_DECISION.test(value) ||
+    MONITORING_SIGNAL.test(value) ||
+    /\b(?:treatment|therapy|medication|drug|dose|dosing|regimen|procedure|surgery|biopsy|imaging|laborator|ecg|follow-up|referral|indication|approval|intervention|management|support|resuscitation|source control)\b/i.test(value)
+  );
 }
 
 function isLongitudinalChange(value: string) {
@@ -272,7 +332,9 @@ function isLongitudinalChange(value: string) {
   const pairedValues = /\bfrom\s+[-+]?\d+(?:\.\d+)?(?:\s*\w+)?\s+(?:to|→)\s+[-+]?\d+(?:\.\d+)?/i.test(value);
   const temporal = /\b(?:baseline|initial|earlier|later|follow-up|subsequent|previous|after|over time)\b/i.test(value);
   const compactPair = /^[A-Za-z][A-Za-z /_-]{1,30}\s+[-+]?\d+(?:\.\d+)?\s+(?:(?:to|→|->)\s+)?[-+]?\d+(?:\.\d+)?(?:\s*\w+)?$/i.test(value);
-  return pairedValues || compactPair || (direction && temporal) || /\b(?:reduced|improved|decreased|increased)\b.{0,50}\bbut (?:still )?(?:persisted|remained)\b/i.test(value);
+  const clinicalChange = /\b(?:progressed|resolved|recurred|enlarged|shrank|stabilized|new lesion|interval change)\b/i.test(value);
+  const treatmentChange = CLINICAL_DECISION.test(value) && temporal;
+  return pairedValues || compactPair || (direction && temporal) || (clinicalChange && temporal) || treatmentChange || /\b(?:reduced|improved|decreased|increased)\b.{0,50}\bbut (?:still )?(?:persisted|remained)\b/i.test(value);
 }
 
 function isStructuralNoise(value: string) {
@@ -286,11 +348,17 @@ function legacyCategoryFor(contentType: ResearchContentType, text: string): Grou
   if (contentType === "limitation" || contentType === "discrepancy" || contentType === "unresolved_question") {
     return /excluded|not represented|population/i.test(text) ? "exclusion" : "limitation";
   }
+  if (contentType === "longitudinal_change" && /adverse|toxicity|safety|harm|complication|worsen|deteriorat|risk|concern/i.test(text)) {
+    return "safety";
+  }
   if (/randomi[sz]ed|double-blind|placebo-controlled|participants?|subjects?|primary endpoint|secondary endpoint|received .*placebo|follow-up date|collection date/i.test(text)) {
     return "study-design";
   }
   if (/\bp\s*[=<]|confidence interval|statistical|significant/i.test(text)) return "statistical";
-  return "efficacy";
+  if (/\b(?:endpoint|response|responded|improved|benefit|effective|remission|resolution|reduced|decreased|increased|progression[- ]free|survival)\b/i.test(text)) {
+    return "efficacy";
+  }
+  return "context";
 }
 
 function buildDirectAnswer({
@@ -298,30 +366,116 @@ function buildDirectAnswer({
   interactions,
   efficacy,
   safety,
+  decisions,
+  context,
   uncertainties,
 }: {
   question: string;
   interactions: GroundedFact[];
   efficacy: GroundedFact[];
   safety: GroundedFact[];
+  decisions: GroundedFact[];
+  context: GroundedFact[];
   uncertainties: GroundedFact[];
 }) {
-  if (INTERACTION_FOCUS.test(question)) {
-    if (interactions.length === 0) {
-      return "The retrieved documents do not establish a harmful drug interaction. They may still contain incomplete medication histories, so absence of a retrieved interaction should not be treated as proof of safety.";
-    }
-
-    const interactionText = interactions.map((fact) => fact.text).join(" ");
-    if (/qtc?|qt[- ]prolong/i.test(interactionText)) {
-      return "Several medication-related concerns are documented, with cumulative QT-prolongation risk as the strongest concern, but no harmful arrhythmia or medication-caused injury is proven.";
-    }
-    return `The sources document ${interactions.length} medication-related concern${interactions.length === 1 ? "" : "s"}. These are source-reported risk signals, not proof that a harmful medication event occurred.`;
+  const ranked = rankFactsForQuestion(
+    uniqueFacts(interactionFocusedQuestion(question)
+      ? [...interactions, ...safety, ...decisions, ...efficacy, ...context, ...uncertainties]
+      : [...decisions, ...context, ...efficacy, ...safety, ...interactions, ...uncertainties])
+      .filter((fact) => isCompleteClinicalProposition(fact.text)),
+    question,
+  );
+  if (ranked.length === 0) {
+    return "The uploaded documents do not contain enough complete, directly extractable evidence to answer the research question reliably.";
   }
 
-  const strongest = uniqueFacts([efficacy[0], efficacy[1], safety[0], uncertainties[0]]);
-  return strongest.length > 0
-    ? `The uploaded sources support ${strongest.length} central conclusions. ${strongest.map((fact) => fact.text).join(" ")}`
-    : "The retrieved passages did not contain enough concrete information to answer the question reliably.";
+  const asksForDecision = /\b(?:should|whether|proceed|begin|start|continue|stop|hold|delay|defer|approve|eligible|appropriate)\b/i.test(question);
+  const selectedFacts = selectSynthesisFacts(ranked, 5);
+  const selected = selectedFacts.map((fact) => ensureSentence(fact.text));
+  if (asksForDecision && decisions.length > 0) {
+    const rankedDecisions = selectSynthesisFacts(rankFactsForQuestion(decisions, question), 3);
+    const diagnostic = ranked.find(isDiagnosticFact);
+    const excludedIds = new Set([
+      ...rankedDecisions.map((fact) => fact.id),
+      ...(diagnostic ? [diagnostic.id] : []),
+    ]);
+    const supportLimit = Math.max(3, 7 - rankedDecisions.length - Number(Boolean(diagnostic)));
+    const supporting = selectSynthesisFacts(
+      ranked.filter((fact) => !excludedIds.has(fact.id)),
+      supportLimit,
+    ).map((fact) => ensureSentence(fact.text));
+    const recommendations = rankedDecisions.map((fact, index) => {
+      const prefix = index === 0
+        ? "The documented treatment priority is"
+        : "The record also supports the recommendation";
+      return `${prefix} ${recommendationClause(fact.text)}.`;
+    });
+    return [
+      ...(diagnostic ? [ensureSentence(diagnostic.text)] : []),
+      ...recommendations,
+      ...supporting,
+    ].join(" ");
+  }
+  if (asksForDecision) {
+    return `The uploaded evidence supports a qualified decision based on the current record: ${selected.join(" ")}`;
+  }
+  return `Based on the uploaded documents, ${lowercaseLeading(selected[0])}${selected.slice(1).length ? ` ${selected.slice(1).join(" ")}` : ""}`;
+}
+
+function rankFactsForQuestion(facts: GroundedFact[], question: string) {
+  const questionTerms = meaningfulTerms(question);
+  return [...facts].sort((left, right) => {
+    const score = (fact: GroundedFact) => {
+      const text = `${fact.text} ${fact.excerpt}`.toLowerCase();
+      const overlap = questionTerms.filter((term) => text.includes(term)).length;
+      const decisionWeight = fact.contentType === "recommendation" ? 5 : 0;
+      const diagnosticWeight = isDiagnosticFact(fact) ? 6 : 0;
+      const objectiveWeight = /\b(?:laborator|biomarker|imaging|patholog|biopsy|culture|antibod|protein|creatinine|complement)\w*\b/i.test(text) || CLINICAL_MEASUREMENT.test(text)
+        ? 4
+        : 0;
+      const uncertaintyWeight = ["limitation", "discrepancy"].includes(fact.contentType) ? 1 : 0;
+      return overlap * 3 + decisionWeight + diagnosticWeight + objectiveWeight + uncertaintyWeight;
+    };
+    return score(right) - score(left);
+  });
+}
+
+function isDiagnosticFact(fact: GroundedFact) {
+  return /\b(?:diagnos(?:is|ed)|strongly support\w*|consistent with|meets? (?:the )?criteria|leading (?:diagnosis|interpretation)|confirmed)\b/i.test(
+    `${fact.text} ${fact.excerpt}`,
+  );
+}
+
+function selectSynthesisFacts(facts: GroundedFact[], limit: number) {
+  const selected: GroundedFact[] = [];
+  for (const fact of facts) {
+    if (selected.some((candidate) => areEquivalentStatements(candidate.text, fact.text))) continue;
+    const family = synthesisFamily(fact);
+    if (selected.some((candidate) => synthesisFamily(candidate) === family)) continue;
+    selected.push(fact);
+    if (selected.length >= limit) break;
+  }
+  return selected;
+}
+
+function synthesisFamily(fact: GroundedFact) {
+  const terms = meaningfulTerms(`${fact.text} ${fact.excerpt}`).slice(0, 4).sort();
+  return `${fact.contentType}:${terms.join("-")}`;
+}
+
+function meaningfulTerms(text: string) {
+  const stop = new Set([
+    "about", "after", "before", "clinical", "current", "document", "documents", "evidence",
+    "finding", "findings", "patient", "patients", "question", "report", "reported", "source",
+    "study", "that", "their", "these", "this", "treatment", "uploaded", "which", "with",
+  ]);
+  return Array.from(new Set(
+    text.toLowerCase().match(/[a-z][a-z0-9-]{3,}/g)?.filter((term) => !stop.has(term)) ?? [],
+  ));
+}
+
+function interactionFocusedQuestion(question: string) {
+  return /\b(?:interaction|medication|drug|coadmin|contraindication|harmful combination)\b/i.test(question);
 }
 
 function relevanceFor(contentType: ResearchContentType, category: GroundedFactCategory) {
@@ -336,14 +490,15 @@ function relevanceFor(contentType: ResearchContentType, category: GroundedFactCa
     evidence_excerpt: "Preserves relevant source context without promoting it to a conclusion.",
   };
   return byContentType[contentType] ?? {
-    efficacy: "Supports the reported outcome assessment.",
+    efficacy: "Documents a treatment outcome or response used in the evidence review.",
     "study-design": "Establishes the source and clinical context.",
-    statistical: "Supports the quantitative result.",
+    statistical: "Documents the quantitative result used in the selected conclusion.",
     interaction: "Supports the medication-interaction assessment.",
     safety: "Supports the source-reported safety assessment.",
     limitation: "Identifies a boundary in the available evidence.",
     exclusion: "Identifies a population not represented by the evidence.",
-  }[category];
+    context: "Preserves relevant source context without overstating its implication.",
+  }[category] ?? "Preserves relevant source context.";
 }
 
 function labelForContentType(contentType: ResearchContentType, category: GroundedFactCategory) {
@@ -365,13 +520,11 @@ function contentTypeOrder(contentType: ResearchContentType) {
 }
 
 function buildMissingEvidence(facts: GroundedFact[], interactionFocused: boolean) {
-  const uncertainties: string[] = [];
-  if (interactionFocused && facts.some((fact) => /qtc?|arrhythmia/i.test(fact.text))) {
-    const sourceAlreadySaysThis = facts.some((fact) => /does not prove.*arrhythmia|not proof.*arrhythmia/i.test(fact.text));
-    if (!sourceAlreadySaysThis) {
-      uncertainties.push("The documents identify QT-related risk but do not prove that an arrhythmia or medication-caused injury occurred.");
-    }
-  }
+  const uncertainties = facts
+    .filter((fact) => fact.contentType === "limitation" || fact.contentType === "discrepancy")
+    .map((fact) => fact.text)
+    .slice(0, 4);
+  void interactionFocused;
   if (uncertainties.length === 0) {
     uncertainties.push("The answer is limited to the uploaded documents and was not checked against external clinical literature.");
   }
@@ -379,23 +532,58 @@ function buildMissingEvidence(facts: GroundedFact[], interactionFocused: boolean
 }
 
 function buildFollowUpQuestions(question: string, facts: GroundedFact[]) {
+  void question;
   const extractedQuestions = facts
     .filter((fact) => fact.contentType === "unresolved_question")
-    .map((fact) => fact.text);
-  if (extractedQuestions.length > 0) return uniqueStrings(extractedQuestions).slice(0, 4);
+    .map((fact) => openQuestionFromGap(fact.text));
 
-  const text = facts.map((fact) => fact.text).join(" ");
-  const questions: string[] = [];
-  if (INTERACTION_FOCUS.test(question)) {
-    if (/qtc?|qt[- ]prolong/i.test(text)) questions.push("Did the QTc remain stable after the documented medication and electrolyte changes?");
-    if (/absorption|acid suppress/i.test(text)) questions.push("What is the confirmed frequency and timing of the medication associated with the absorption concern?");
-    if (/orthostatic/i.test(text)) questions.push("Did the orthostatic symptoms resolve after the documented medication change?");
-    if (/blood loss|bleeding/i.test(text)) questions.push("Was gastrointestinal or another ongoing source of blood loss excluded?");
+  const evidenceGaps = facts
+    .filter((fact) =>
+      fact.contentType === "limitation" ||
+      fact.contentType === "discrepancy" ||
+      (fact.contentType === "recommendation" && /\b(?:until|pending|unless|after)\b/i.test(fact.text)),
+    )
+    .map((fact) => openQuestionFromGap(fact.text));
+
+  return uniqueStrings([...extractedQuestions, ...evidenceGaps]).slice(0, 6);
+}
+
+function isCompleteClinicalProposition(value: string) {
+  const text = value.replace(/\s+/g, " ").trim();
+  if (CLINICAL_DECISION.test(text) || MONITORING_SIGNAL.test(text)) return true;
+  if (text.split(/\s+/).length >= 3 && /\b(?:risk|benefit|concern|constraint|contraindication|complication|feasibility|uncertainty)\b/i.test(text)) {
+    return true;
   }
-  if (questions.length === 0) {
-    questions.push(`Which additional source would most reduce uncertainty for: ${question}`);
+  if (/\b(?:adverse events?|serious adverse events?|safety events?|complications?)\b/i.test(text) && (CLINICAL_MEASUREMENT.test(text) || /\b(?:occurred|reported|observed|included|included:|were|was)\b/i.test(text))) {
+    return true;
   }
-  return questions.slice(0, 4);
+  if (CLINICAL_MEASUREMENT.test(text) && /\b(?:was|were|is|are|measured|increased|decreased|remained|improved|worsened|reached)\b/i.test(text)) {
+    return true;
+  }
+  return /\b(?:is|are|was|were|has|have|had|show(?:s|ed)?|report(?:s|ed)?|recommend(?:s|ed)?|indicat(?:e|es|ed)|support(?:s|ed)?|suggest(?:s|ed)?|increase(?:s|d)?|decrease(?:s|d)?|improve(?:s|d)?|worsen(?:s|ed)?|remain(?:s|ed)?|persist(?:s|ed)?|limit(?:s|ed)?|exclude(?:s|d)?|may|might|can|could|should|would|will)\b/i.test(text);
+}
+
+function recommendationClause(value: string) {
+  const text = stripTerminalPunctuation(value.replace(/\s+/g, " ").trim());
+  const negativeImperative = text.match(/^do not\s+(.+)$/i);
+  if (negativeImperative) return `not to ${lowercaseLeading(negativeImperative[1])}`;
+  const imperative = text.match(/^(proceed|begin|start|continue|stop|hold|delay|defer|withhold|switch|monitor|repeat|obtain|consider|avoid|favor|prioritize|prioritise|administer|review|evaluate|confirm|verify)\b(.*)$/i);
+  if (imperative) return `to ${imperative[1].toLowerCase()}${imperative[2]}`;
+  return `that ${lowercaseLeading(text)}`;
+}
+
+function ensureSentence(value: string) {
+  const text = stripTerminalPunctuation(value.replace(/\s+/g, " ").trim());
+  return `${text}.`;
+}
+
+function stripTerminalPunctuation(value: string) {
+  return value.replace(/[.!?]+$/, "");
+}
+
+function lowercaseLeading(value: string) {
+  if (!value || /^[A-Z]{2,}\b/.test(value)) return value;
+  return value.charAt(0).toLowerCase() + value.slice(1);
 }
 
 function buildMarkdownReport({

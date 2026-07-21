@@ -99,20 +99,22 @@ export function chunkDocument(
     while (start < page.text.length) {
       const roughEnd = Math.min(page.text.length, start + chunkSize);
       const end = findSentenceBoundary(page.text, roughEnd, start);
-      const text = page.text.slice(start, end).trim();
+      const contentStart = skipWhitespaceForward(page.text, start, end);
+      const contentEnd = skipWhitespaceBackward(page.text, end, contentStart);
+      const text = page.text.slice(contentStart, contentEnd);
 
       if (text) {
         chunks.push({
-          id: `${document.id}:p${page.number}:${start}-${end}`,
+          id: `${document.id}:p${page.number}:${contentStart}-${contentEnd}`,
           documentId: document.id,
           documentName: document.name,
           page: page.number,
           text,
           score: 0,
-          startOffset: start,
-          endOffset: end,
-          contextBefore: page.text.slice(Math.max(0, start - CONTEXT_SIZE), start),
-          contextAfter: page.text.slice(end, Math.min(page.text.length, end + CONTEXT_SIZE)),
+          startOffset: contentStart,
+          endOffset: contentEnd,
+          contextBefore: page.text.slice(Math.max(0, contentStart - CONTEXT_SIZE), contentStart),
+          contextAfter: page.text.slice(contentEnd, Math.min(page.text.length, contentEnd + CONTEXT_SIZE)),
           matchedTerms: [],
           lexicalScore: 0,
           similarityScore: null,
@@ -125,7 +127,7 @@ export function chunkDocument(
         break;
       }
 
-      start = Math.max(start + 1, end - overlap);
+      start = findOverlappingSentenceStart(page.text, start, end, overlap);
     }
   }
 
@@ -137,11 +139,57 @@ function findSentenceBoundary(text: string, roughEnd: number, start: number) {
     return text.length;
   }
 
-  const searchStart = Math.max(start + Math.floor((roughEnd - start) * 0.72), start + 1);
-  const tail = text.slice(searchStart, roughEnd + 120);
-  const match = tail.match(/[.!?](?:\s|$)/);
+  const minimumEnd = Math.max(start + 1, start + Math.floor((roughEnd - start) * 0.58));
+  const backward = sentenceEndOffsets(text, minimumEnd, roughEnd).at(-1);
+  if (backward !== undefined) return backward;
 
-  return match?.index === undefined
-    ? roughEnd
-    : Math.min(text.length, searchStart + match.index + 1);
+  const forwardLimit = Math.min(text.length, roughEnd + Math.max(320, roughEnd - start));
+  const forward = sentenceEndOffsets(text, roughEnd, forwardLimit)[0];
+  if (forward !== undefined) return forward;
+
+  // A long unpunctuated source block is safer as one oversized passage than
+  // as several fragments that could be mistaken for complete findings.
+  return text.length;
+}
+
+function findOverlappingSentenceStart(
+  text: string,
+  previousStart: number,
+  end: number,
+  overlap: number,
+) {
+  const desired = Math.max(previousStart + 1, end - overlap);
+  const sentenceEnds = sentenceEndOffsets(text, previousStart, desired);
+  const previousSentenceEnd = sentenceEnds.at(-1);
+  if (previousSentenceEnd === undefined) return end;
+  const nextStart = skipWhitespaceForward(text, previousSentenceEnd, end);
+  return nextStart > previousStart && nextStart < end ? nextStart : end;
+}
+
+function sentenceEndOffsets(text: string, from: number, to: number) {
+  const offsets: number[] = [];
+  const segment = text.slice(from, to);
+  const pattern = /[.!?](?:["')\]]*)?(?=\s|$)/g;
+  for (const match of segment.matchAll(pattern)) {
+    const offset = from + (match.index ?? 0) + match[0].length;
+    if (!isAbbreviationBoundary(text, offset)) offsets.push(offset);
+  }
+  return offsets;
+}
+
+function isAbbreviationBoundary(text: string, offset: number) {
+  const prefix = text.slice(Math.max(0, offset - 8), offset).toLowerCase();
+  return /\b(?:dr|mr|mrs|ms|prof|fig|eq|no|vs|e\.g|i\.e)\.$/.test(prefix);
+}
+
+function skipWhitespaceForward(text: string, start: number, end: number) {
+  let offset = start;
+  while (offset < end && /\s/.test(text[offset])) offset += 1;
+  return offset;
+}
+
+function skipWhitespaceBackward(text: string, end: number, start: number) {
+  let offset = end;
+  while (offset > start && /\s/.test(text[offset - 1])) offset -= 1;
+  return offset;
 }

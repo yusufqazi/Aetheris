@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { isResearchIntelligenceGrounded, sanitizeResearchIntelligence } from "@/lib/research/intelligence";
+import {
+  isResearchIntelligenceGrounded,
+  researchIntelligenceGroundingIssues,
+  sanitizeResearchIntelligence,
+} from "@/lib/research/intelligence";
 import type { EvidenceItem, ResearchIntelligence } from "@/lib/types";
 
 const evidence: EvidenceItem[] = [{
@@ -31,7 +35,19 @@ describe("research intelligence grounding", () => {
     expect(sanitized?.evidenceMappings?.[0].exactQuote).toBe(
       "QTc improved after medication changes and electrolyte correction.",
     );
+    expect(sanitized?.structuredClaims).toHaveLength(1);
+    expect(sanitized?.structuredClaims?.[0].evidenceIds).toEqual(["evidence:valid"]);
     expect(isResearchIntelligenceGrounded(sanitized, evidence)).toBe(true);
+  });
+
+  it("rejects unsupported numeric claims in the direct answer", () => {
+    const intelligence = makeIntelligence();
+    intelligence.directAnswer = "The uploaded record confirms harmful arrhythmia in 12 patients after treatment.";
+
+    expect(isResearchIntelligenceGrounded(intelligence, evidence)).toBe(false);
+    expect(researchIntelligenceGroundingIssues(intelligence, evidence)).toContain(
+      "direct-answer-contains-unsupported-number",
+    );
   });
 });
 
@@ -88,6 +104,29 @@ function makeIntelligence(): ResearchIntelligence {
       exactQuote: "QTc normalized completely.",
       relevanceExplanation: "Fabricated quote.",
       confidence: "high",
+    }],
+    structuredClaims: [{
+      id: "claim:qt",
+      conclusion: "QTc improved after the documented medication changes.",
+      kind: "inference",
+      dimension: "safety",
+      reasoningSummary: "The follow-up passage documents improvement after the recorded intervention.",
+      evidenceIds: ["evidence:valid", "invented-id"],
+      counterEvidenceIds: [],
+      uncertainty: "The record does not isolate which intervention produced the change.",
+      confidence: "medium",
+      priority: "primary",
+    }, {
+      id: "claim:unsupported",
+      conclusion: "A harmful arrhythmia was confirmed in 12 patients.",
+      kind: "inference",
+      dimension: "safety",
+      reasoningSummary: "This conclusion relies on an evidence passage that does not exist.",
+      evidenceIds: ["invented-id"],
+      counterEvidenceIds: [],
+      uncertainty: "None.",
+      confidence: "high",
+      priority: "important",
     }],
   };
 }

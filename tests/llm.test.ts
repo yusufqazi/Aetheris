@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { getLlmConfiguration, hasLlmAccess, modelRetryDelayMs } from "@/lib/llm";
+import { getLlmConfiguration, hasLlmAccess, makeGeminiSchema, modelRetryDelayMs } from "@/lib/llm";
+import { researchDirectorOutputSchema } from "@/lib/research/schemas";
 
 const original = {
   provider: process.env.AI_PROVIDER,
@@ -17,6 +18,19 @@ afterEach(() => {
 });
 
 describe("AI provider configuration", () => {
+  it("adapts the research-director schema to Gemini's supported structured-output subset", () => {
+    const serialized = JSON.stringify(makeGeminiSchema(researchDirectorOutputSchema));
+
+    expect(serialized).not.toContain('"$schema"');
+    expect(serialized).not.toContain('"minItems"');
+    expect(serialized).not.toContain('"maxItems"');
+    expect(serialized).not.toContain('"minLength"');
+    expect(serialized).not.toContain('"maxLength"');
+    expect(serialized).toContain('"claims"');
+    expect(serialized).toContain('"contradictions"');
+    expect(serialized).toContain('"unansweredQuestions"');
+  });
+
   it("prefers Gemini when a Google AI Studio key is configured", () => {
     delete process.env.AI_PROVIDER;
     process.env.GEMINI_API_KEY = "test-google-key";

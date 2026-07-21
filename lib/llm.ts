@@ -1,4 +1,4 @@
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { toJSONSchema, type ZodType } from "zod";
@@ -58,7 +58,7 @@ export async function runStructuredGeneration<T>({
   schema: ZodType<T>;
   schemaName: string;
   fallback: () => T;
-  qualityCheck?: (value: T) => boolean;
+  qualityCheck?: (value: T) => boolean | { valid: boolean; reason?: string };
   onFallback?: (reason: string) => void;
 }) {
   const configuration = getLlmConfiguration();
@@ -98,10 +98,17 @@ export async function runStructuredGeneration<T>({
         logModelAttempt(schemaName, attempt, attemptStartedAt, failureReason);
         continue;
       }
-      if (qualityCheck && !qualityCheck(result.data)) {
-        failureReason = `AI output for ${schemaName} was too vague or insufficiently grounded.`;
-        logModelAttempt(schemaName, attempt, attemptStartedAt, failureReason);
-        continue;
+      if (qualityCheck) {
+        const quality = qualityCheck(result.data);
+        const valid = typeof quality === "boolean" ? quality : quality.valid;
+        if (!valid) {
+          const reason = typeof quality === "boolean" ? undefined : quality.reason;
+          failureReason = reason
+            ? `AI output for ${schemaName} failed grounding checks: ${reason}.`
+            : `AI output for ${schemaName} was too vague or insufficiently grounded.`;
+          logModelAttempt(schemaName, attempt, attemptStartedAt, failureReason);
+          continue;
+        }
       }
 
       logModelAttempt(schemaName, attempt, attemptStartedAt, "completed");
@@ -147,7 +154,6 @@ async function generateWithGoogle<T>({
       systemInstruction: system,
       temperature: 0.1,
       maxOutputTokens: googleOutputTokenBudget(schemaName),
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
       responseMimeType: "application/json",
       responseJsonSchema: makeGeminiSchema(schema),
       abortSignal,
@@ -186,7 +192,7 @@ async function generateWithOpenAi<T>({
   return response.choices[0]?.message?.parsed;
 }
 
-function makeGeminiSchema<T>(schema: ZodType<T>) {
+export function makeGeminiSchema<T>(schema: ZodType<T>) {
   const jsonSchema = toJSONSchema(schema, {
     target: "draft-07",
     io: "output",
@@ -205,7 +211,19 @@ function stripUnsupportedSchemaKeywords(value: unknown): unknown {
 
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
-      .filter(([key]) => !["$schema", "default", "examples"].includes(key))
+      // Gemini validates the returned object, but its structured-output endpoint
+      // rejects some otherwise-valid JSON Schema cardinality constraints. Keep
+      // the provider schema structural and enforce the full Zod contract after
+      // generation in runStructuredGeneration.
+      .filter(([key]) => ![
+        "$schema",
+        "default",
+        "examples",
+        "minItems",
+        "maxItems",
+        "minLength",
+        "maxLength",
+      ].includes(key))
       .map(([key, child]) => [key, stripUnsupportedSchemaKeywords(child)]),
   );
 }
@@ -215,7 +233,7 @@ function googleConfiguration(): LlmConfiguration {
     enabled: true,
     provider: "google",
     providerLabel: "Google Gemini",
-    model: process.env.GEMINI_MODEL ?? "gemini-3.5-flash",
+    model: process.env.GEMINI_MODEL ?? "gemini-3.1-flash-lite",
     embeddingModel: process.env.GEMINI_EMBEDDING_MODEL ?? "gemini-embedding-2",
   };
 }
@@ -327,13 +345,13 @@ function googleRequestIntervalMs() {
 }
 
 function googleRequestTimeoutMs(schemaName: string) {
-  const defaultTimeout = schemaName === "report_generation_output" ? 75_000 : 55_000;
+  const defaultTimeout = schemaName === "research_intelligence_output" ? 75_000 : 55_000;
   const configured = Number(process.env.GEMINI_REQUEST_TIMEOUT_MS ?? defaultTimeout);
   return Number.isFinite(configured) ? Math.max(10_000, configured) : defaultTimeout;
 }
 
 function googleOutputTokenBudget(schemaName: string) {
-  if (schemaName === "report_generation_output") return 6_144;
+  if (schemaName === "research_intelligence_output") return 6_144;
   if (schemaName === "debate_consensus_output") return 4_096;
   return 3_072;
 }

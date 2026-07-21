@@ -167,7 +167,8 @@ export type GroundedFactCategory =
   | "study-design"
   | "limitation"
   | "exclusion"
-  | "statistical";
+  | "statistical"
+  | "context";
 
 export const RESEARCH_CONTENT_TYPES = [
   "finding",
@@ -299,6 +300,23 @@ export interface ReportSection {
 
 export type ResearchAnswerStatus = "direct" | "partial" | "insufficient";
 export type ResearchPriority = "critical" | "high" | "moderate" | "low";
+export type ResearchClaimKind = "direct_observation" | "inference";
+export type ResearchAnswerDimension = "efficacy" | "safety" | "limitation" | "context";
+
+export interface StructuredResearchClaim {
+  id: string;
+  conclusion: string;
+  kind: ResearchClaimKind;
+  dimension: ResearchAnswerDimension;
+  theme?: string;
+  clinicalImplication?: string;
+  reasoningSummary: string;
+  evidenceIds: string[];
+  counterEvidenceIds: string[];
+  uncertainty: string;
+  confidence: "low" | "medium" | "high";
+  priority: "primary" | "important" | "context";
+}
 
 export interface EvidenceTrajectoryItem {
   sequence: number;
@@ -328,8 +346,10 @@ export interface ResearchContradiction {
 
 export interface DecisionChangingUnknown {
   unknown: string;
+  known?: string;
   whyItMatters: string;
   evidenceNeeded: string;
+  evidenceIds?: string[];
   priority: Exclude<ResearchPriority, "critical">;
 }
 
@@ -343,6 +363,7 @@ export interface ResearchIntelligence {
   contradictions: ResearchContradiction[];
   decisionChangingUnknowns: DecisionChangingUnknown[];
   evidenceMappings?: ResearchEvidenceMapping[];
+  structuredClaims?: StructuredResearchClaim[];
 }
 
 export interface ReportOutput extends AgentBaseOutput {

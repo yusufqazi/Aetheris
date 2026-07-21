@@ -1,14 +1,14 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 
 import { getLlmConfiguration, hasLlmAccess } from "@/lib/llm";
-import { createEventFactory, encodeResearchEvent } from "@/lib/research/events";
-import { runResearchPipeline } from "@/lib/research/pipeline";
+import { registerResearchJob, runRegisteredResearchJob } from "@/lib/research/jobs";
 import { analyzeRequestSchema } from "@/lib/research/schemas";
-import { applyResearchEvent, createResearchSession } from "@/lib/research/session";
+import { createResearchSession } from "@/lib/research/session";
 import { saveSessionToSupabase } from "@/lib/supabase";
 import type { ResearchEvent } from "@/lib/types";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
 export async function GET() {
   const configuration = getLlmConfiguration();
@@ -29,6 +29,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const accessToken = accessTokenFromRequest(request);
   let payload: unknown;
   try {
     payload = await request.json();
@@ -48,9 +49,6 @@ export async function POST(request: Request) {
   }
 
   const body = parsed.data;
-  const encoder = new TextEncoder();
-  const createEvent = createEventFactory(body.sessionId, body.startingSequence);
-  const priorEvents = body.priorEvents.filter(isResearchEvent) as unknown as ResearchEvent[];
   let session = createResearchSession({
     id: body.sessionId,
     question: body.question,
@@ -58,61 +56,35 @@ export async function POST(request: Request) {
     selectedAgents: body.selectedAgents,
     mode: hasLlmAccess() ? "live" : "demo",
   });
-  session = { ...session, events: priorEvents };
+  session = {
+    ...session,
+    events: body.priorEvents
+      .filter(isResearchEvent)
+      .map((event) => event as unknown as ResearchEvent),
+  };
 
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const emit = async (input: Parameters<typeof createEvent>[0]) => {
-        const event = createEvent(input);
-        session = applyResearchEvent(session, event);
-        controller.enqueue(encoder.encode(encodeResearchEvent(event)));
+  const checkpoint = await saveSessionToSupabase(session, accessToken);
+  if (checkpoint?.error) {
+    console.error("[Aetheris analyze] Initial session checkpoint failed", {
+      sessionId: session.id,
+      message: checkpoint.error.message,
+    });
+  }
 
-        if (
-          event.type === "stage.completed" ||
-          event.type === "agent.completed" ||
-          event.type === "session.completed" ||
-          event.type === "session.failed"
-        ) {
-          await saveSessionToSupabase(session);
-        }
-      };
+  const job = registerResearchJob(session, accessToken);
+  after(() => runRegisteredResearchJob(job.session.id, accessToken));
 
-      try {
-        await saveSessionToSupabase(session);
-        await runResearchPipeline({ session, emit });
-        controller.close();
-      } catch (error) {
-        const researchError = {
-          code: "PIPELINE_FAILED",
-          title: "Research pipeline interrupted",
-          message: "Aetheris preserved the completed work, but the research run did not finish.",
-          retryable: true,
-          details: error instanceof Error ? error.message : "Unknown pipeline error",
-        };
-
-        await emit({
-          type: "session.failed",
-          phase: "error",
-          message: researchError.message,
-          data: { error: researchError },
-        });
-        controller.close();
-      }
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "application/x-ndjson; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-      "X-Accel-Buffering": "no",
-      "X-Content-Type-Options": "nosniff",
-      "X-Aetheris-Mode": hasLlmAccess() ? "live" : "demo",
-    },
+  return NextResponse.json({
+    sessionId: session.id,
+    status: job.status,
+    mode: session.mode,
+  }, {
+    status: 202,
+    headers: { "Cache-Control": "no-store" },
   });
 }
 
-function isResearchEvent(value: unknown): value is ResearchEvent {
+function isResearchEvent(value: unknown) {
   if (!value || typeof value !== "object") {
     return false;
   }
@@ -125,4 +97,9 @@ function isResearchEvent(value: unknown): value is ResearchEvent {
     typeof event.sequence === "number" &&
     typeof event.type === "string"
   );
+}
+
+function accessTokenFromRequest(request: Request) {
+  const value = request.headers.get("authorization");
+  return value?.match(/^Bearer\s+(.+)$/i)?.[1] ?? null;
 }

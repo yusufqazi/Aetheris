@@ -5,7 +5,6 @@ import { useState } from "react";
 
 import { CitationLinks } from "@/components/workspace/report/CitationLinks";
 import type {
-  InvestigationChange,
   InvestigationConflict,
   InvestigationData,
   InvestigationFinding,
@@ -13,7 +12,7 @@ import type {
 } from "@/lib/research/investigation";
 import type { Citation, ResearchSession } from "@/lib/types";
 
-type ViewId = "findings" | "conflicts" | "changes" | "questions";
+type ViewId = "findings" | "conflicts" | "questions";
 
 export function InvestigationSummary({
   investigation,
@@ -80,14 +79,29 @@ export function InvestigationSummary({
 function ViewContent({ view, investigation, citations, session }: { view: ViewId; investigation: InvestigationData; citations: Citation[]; session: ResearchSession }) {
   if (view === "findings") return <Findings items={investigation.findings} citations={citations} session={session} />;
   if (view === "conflicts") return <Conflicts items={investigation.conflicts} citations={citations} session={session} />;
-  if (view === "changes") return <Changes items={investigation.changes} citations={citations} session={session} />;
   return <OpenQuestions items={investigation.openQuestions} citations={citations} session={session} />;
 }
 
 function Findings({ items, citations, session }: { items: InvestigationFinding[]; citations: Citation[]; session: ResearchSession }) {
+  if (items.length === 0) {
+    return <EmptyState>No reviewable findings could be grounded in the uploaded evidence.</EmptyState>;
+  }
+  const groups = groupFindingsByTheme(items);
+  const displayIndexes = new Map(
+    groups.flatMap(([, themeItems]) => themeItems).map((item, index) => [item.id, index]),
+  );
   return (
-    <div className="divide-y divide-white/[0.07] border-y border-white/[0.07]">
-      {items.map((item, index) => (
+    <div className="space-y-7">
+      {groups.map(([theme, themeItems]) => (
+        <section key={theme} aria-label={theme}>
+          <div className="mb-2 flex items-center gap-3">
+            <h3 className="font-mono text-[8px] uppercase tracking-[0.17em] text-sky-300/70">{theme}</h3>
+            <span className="h-px flex-1 bg-white/[0.06]" />
+          </div>
+          <div className="divide-y divide-white/[0.07] border-y border-white/[0.07]">
+          {themeItems.map((item) => {
+            const index = displayIndexes.get(item.id) ?? 0;
+            return (
         <article
           key={item.id}
           data-testid="finding-row"
@@ -114,42 +128,43 @@ function Findings({ items, citations, session }: { items: InvestigationFinding[]
             <CitationLinks citationIds={item.citationIds} citations={citations} session={session} claim={item.statement} relationships={item.relationships} />
           </div>
         </article>
+            );
+          })}
+          </div>
+        </section>
       ))}
     </div>
   );
 }
 
 function Conflicts({ items, citations, session }: { items: InvestigationConflict[]; citations: Citation[]; session: ResearchSession }) {
+  if (items.length === 0) {
+    return <EmptyState>No meaningful conflicts were detected across the uploaded evidence.</EmptyState>;
+  }
   return <div className="space-y-3">{items.map((item) => (
     <article key={item.id} className="rounded-[1rem] border border-amber-200/10 bg-amber-100/[0.025] p-4">
       <p className="font-mono text-[8px] uppercase tracking-[0.14em] text-amber-200/65">{item.type}</p>
       <p className="mt-2 text-sm leading-6 text-slate-200">{item.statement}</p>
-      <p className="mt-2 text-xs leading-5 text-slate-500">{item.explanation}</p>
+      {item.positions.length > 1 ? (
+        <div className="mt-3 divide-y divide-white/[0.06] border-y border-white/[0.06]">
+          {item.positions.map((position, index) => (
+            <div key={`${item.id}:${position.documentName}:${index}`} className="grid gap-1 py-2.5 sm:grid-cols-[10rem_minmax(0,1fr)]">
+              <p className="truncate text-[10px] font-medium text-amber-100/60" title={position.documentName}>{position.documentName}</p>
+              <p className="text-xs leading-5 text-slate-400">{position.statement}</p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <p className="mt-3 text-xs leading-5 text-slate-500"><span className="text-slate-400">Why it matters:</span> {item.explanation}</p>
       <div className="mt-3"><CitationLinks citationIds={item.citationIds} citations={citations} session={session} claim={item.statement} relationships={item.relationships} /></div>
     </article>
   ))}</div>;
 }
 
-function Changes({ items, citations, session }: { items: InvestigationChange[]; citations: Citation[]; session: ResearchSession }) {
-  return (
-    <div className="overflow-x-auto rounded-[1rem] border border-white/[0.08]">
-      <table className="w-full min-w-[42rem] border-collapse text-left">
-        <thead className="bg-white/[0.025] font-mono text-[8px] uppercase tracking-[0.14em] text-slate-600">
-          <tr><th className="px-4 py-3">Measure</th><th className="px-4 py-3">Earlier</th><th className="px-4 py-3">Later</th><th className="px-4 py-3">Interpretation</th><th className="px-4 py-3">Source</th></tr>
-        </thead>
-        <tbody className="divide-y divide-white/[0.07]">
-          {items.map((item) => (
-            <tr key={item.id} className="align-top text-xs text-slate-400">
-              <td className="px-4 py-4 font-medium text-slate-200">{item.measure}</td><td className="px-4 py-4">{item.earlierValue}</td><td className="px-4 py-4 text-sky-200">{item.laterValue}</td><td className="max-w-sm px-4 py-4 leading-5">{item.interpretation}</td><td className="px-4 py-4"><CitationLinks citationIds={item.citationIds} citations={citations} session={session} limit={1} claim={`${item.measure}: ${item.earlierValue} to ${item.laterValue}`} relationships={item.relationships} /></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function OpenQuestions({ items, citations, session }: { items: InvestigationQuestion[]; citations: Citation[]; session: ResearchSession }) {
+  if (items.length === 0) {
+    return <EmptyState>No material unanswered questions were identified from the uploaded evidence.</EmptyState>;
+  }
   return <div className="divide-y divide-white/[0.07] border-y border-white/[0.07]">{items.map((item) => (
     <details key={item.id} className="group py-1">
       <summary className="flex min-h-14 cursor-pointer list-none items-center justify-between gap-4 py-3 text-sm font-medium leading-6 text-slate-200">
@@ -170,9 +185,25 @@ function OpenQuestions({ items, citations, session }: { items: InvestigationQues
 
 function availableViews(investigation: InvestigationData) {
   return [
-    investigation.findings.length > 0 ? { id: "findings" as const, label: "Findings", count: investigation.findings.length } : null,
-    investigation.conflicts.length > 0 ? { id: "conflicts" as const, label: "Conflicts", count: investigation.conflicts.length } : null,
-    investigation.changes.length > 0 ? { id: "changes" as const, label: "Changes", count: investigation.changes.length } : null,
-    investigation.openQuestions.length > 0 ? { id: "questions" as const, label: "Open Questions", count: investigation.openQuestions.length } : null,
-  ].filter((view): view is NonNullable<typeof view> => Boolean(view));
+    { id: "findings" as const, label: "Findings", count: investigation.findings.length },
+    { id: "conflicts" as const, label: "Conflicts", count: investigation.conflicts.length },
+    { id: "questions" as const, label: "Open Questions", count: investigation.openQuestions.length },
+  ];
+}
+
+function groupFindingsByTheme(items: InvestigationFinding[]) {
+  const groups = new Map<string, InvestigationFinding[]>();
+  for (const item of items) {
+    const theme = item.theme.trim() || "Clinical context";
+    groups.set(theme, [...(groups.get(theme) ?? []), item]);
+  }
+  return Array.from(groups.entries());
+}
+
+function EmptyState({ children }: { children: string }) {
+  return (
+    <div className="border-y border-white/[0.07] py-8 text-center text-xs leading-5 text-slate-600">
+      {children}
+    </div>
+  );
 }

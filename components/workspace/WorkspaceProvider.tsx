@@ -11,8 +11,9 @@ import {
   useRef,
 } from "react";
 
+import { useAuth } from "@/components/auth/AuthProvider";
 import { makeDemoSession } from "@/lib/demo-data";
-import { createEventFactory, readResearchEventStream } from "@/lib/research/events";
+import { createEventFactory } from "@/lib/research/events";
 import {
   applyResearchEvent,
   createAgentExecutions,
@@ -21,6 +22,7 @@ import {
 } from "@/lib/research/session";
 import { deleteLocalSession, loadLocalSessions, saveLocalSession } from "@/lib/session-store";
 import type {
+  ResearchEvent,
   ResearchSession,
   WorkspaceInspectorSelection,
 } from "@/lib/types";
@@ -64,22 +66,31 @@ const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const { user, accessToken, loading: authLoading } = useAuth();
   const [state, dispatch] = useReducer(workspaceReducer, initialState);
   const stateRef = useRef(state);
+  const pollingSessionsRef = useRef(new Set<string>());
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
 
   useEffect(() => {
+    if (authLoading) return;
     let active = true;
 
     async function hydrate() {
       const [local, remote] = await Promise.all([
-        loadLocalSessions(),
-        fetch("/api/sessions", { cache: "no-store" })
+        // Only sessions owned by the current account are loaded from the local cache.
+        // Unowned legacy sessions remain readable for compatibility, but new guests
+        // are never written to this cache.
+        loadLocalSessions(user?.id),
+        user && accessToken ? fetch("/api/sessions", {
+          cache: "no-store",
+          headers: { Authorization: `Bearer ${accessToken}` },
+        })
           .then((response) => (response.ok ? response.json() : []))
-          .catch(() => []),
+          .catch(() => []) : Promise.resolve([]),
       ]);
       const remoteSessions = Array.isArray(remote)
         ? remote
@@ -99,14 +110,16 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [accessToken, authLoading, user]);
 
   const commitSession = useCallback((session: ResearchSession) => {
     const next = workspaceReducer(stateRef.current, { type: "session.upsert", session });
     stateRef.current = next;
     dispatch({ type: "session.upsert", session });
-    void saveLocalSession(session);
-  }, []);
+    if (user) {
+      void saveLocalSession(session, user.id);
+    }
+  }, [user]);
 
   const setActiveSessionId = useCallback((sessionId: string | null) => {
     const next = workspaceReducer(stateRef.current, { type: "session.active", sessionId });
@@ -118,9 +131,14 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     const next = workspaceReducer(stateRef.current, { type: "session.remove", sessionId });
     stateRef.current = next;
     dispatch({ type: "session.remove", sessionId });
-    await deleteLocalSession(sessionId);
-    await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" }).catch(() => null);
-  }, []);
+    await deleteLocalSession(sessionId, user?.id);
+    if (accessToken) {
+      await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }).catch(() => null);
+    }
+  }, [accessToken, user]);
 
   const selectInspector = useCallback((selection: WorkspaceInspectorSelection) => {
     const next = workspaceReducer(stateRef.current, { type: "inspector.select", selection });
@@ -133,6 +151,60 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     stateRef.current = next;
     dispatch({ type: "inspector.mobile", open });
   }, []);
+
+  const pollResearchJob = useCallback(async (initialSession: ResearchSession) => {
+    if (pollingSessionsRef.current.has(initialSession.id)) return;
+    pollingSessionsRef.current.add(initialSession.id);
+
+    let activeSession = initialSession;
+    let sequence = Math.max(0, ...activeSession.events.map((event) => event.sequence));
+    let transientFailures = 0;
+
+    try {
+      while (true) {
+        const response = await fetch(
+          `/api/analyze/${encodeURIComponent(activeSession.id)}?after=${sequence}`,
+          {
+            cache: "no-store",
+            headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+          },
+        );
+
+        if (!response.ok) {
+          transientFailures += 1;
+          if (transientFailures >= 4) {
+            const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+            throw new Error(payload?.error ?? "The research job could not be reached.");
+          }
+          await pollingDelay(900 * transientFailures);
+          continue;
+        }
+
+        transientFailures = 0;
+        const payload = await response.json() as ResearchJobPollResponse;
+        const remoteSession = normalizeResearchSession(payload.session);
+        if (remoteSession) {
+          activeSession = remoteSession;
+          sequence = Math.max(sequence, ...remoteSession.events.map((event) => event.sequence));
+          commitSession(remoteSession);
+        }
+
+        for (const event of payload.events ?? []) {
+          const current = stateRef.current.sessions.find((item) => item.id === event.sessionId)
+            ?? activeSession;
+          const updated = applyResearchEvent(current, event);
+          activeSession = updated;
+          sequence = Math.max(sequence, event.sequence);
+          commitSession(updated);
+        }
+
+        if (payload.status === "completed" || payload.status === "failed") return;
+        await pollingDelay(700);
+      }
+    } finally {
+      pollingSessionsRef.current.delete(initialSession.id);
+    }
+  }, [accessToken, commitSession]);
 
   const startAnalysis = useCallback(
     async (session: ResearchSession, options?: { retry?: boolean }) => {
@@ -147,7 +219,10 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       try {
         const response = await fetch("/api/analyze", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          },
           body: JSON.stringify({
             sessionId: activeSession.id,
             question: activeSession.question,
@@ -164,19 +239,12 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
           throw new Error(payload?.error ?? "The research stream could not be started.");
         }
 
-        const engineMode = response.headers.get("X-Aetheris-Mode");
-        if (engineMode === "live" || engineMode === "demo") {
-          activeSession = { ...activeSession, mode: engineMode };
+        const job = await response.json() as { mode?: ResearchSession["mode"] };
+        if (job.mode === "live" || job.mode === "demo") {
+          activeSession = { ...activeSession, mode: job.mode };
           commitSession(activeSession);
         }
-
-        await readResearchEventStream(response, (event) => {
-          const current =
-            stateRef.current.sessions.find((item) => item.id === event.sessionId) ?? activeSession;
-          const updated = applyResearchEvent(current, event);
-          activeSession = updated;
-          commitSession(updated);
-        });
+        await pollResearchJob(activeSession);
       } catch (error) {
         const current =
           stateRef.current.sessions.find((item) => item.id === activeSession.id) ?? activeSession;
@@ -187,12 +255,12 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         const failure = createEvent({
           type: "session.failed",
           phase: "error",
-          message: "The research connection ended before the session completed",
+          message: "The research job could not be monitored to completion",
           data: {
             error: {
               code: "RESEARCH_STREAM_FAILED",
-              title: "Research session interrupted",
-              message: "Your prepared documents and completed work are preserved.",
+              title: "Research monitoring interrupted",
+              message: "The server-owned research job may still be running. Your prepared documents and completed work are preserved.",
               retryable: true,
               details: error instanceof Error ? error.message : "Unknown stream error",
             },
@@ -201,15 +269,22 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         commitSession(applyResearchEvent(current, failure));
       }
     },
-    [commitSession, router, selectInspector, setActiveSessionId],
+    [accessToken, commitSession, pollResearchJob, router, selectInspector, setActiveSessionId],
   );
+
+  useEffect(() => {
+    if (!state.hydrated) return;
+    for (const session of state.sessions) {
+      if (["completed", "error"].includes(session.status)) continue;
+      void pollResearchJob(session).catch(() => null);
+    }
+  }, [pollResearchJob, state.hydrated, state.sessions]);
 
   const openDemoSession = useCallback(async () => {
     const session = makeDemoSession();
     commitSession(session);
     setActiveSessionId(session.id);
     selectInspector({ tab: "confidence", sessionId: session.id });
-    await saveLocalSession(session);
     startTransition(() => router.push(`/research/${session.id}`));
   }, [commitSession, router, selectInspector, setActiveSessionId]);
 
@@ -234,6 +309,17 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       {children}
     </WorkspaceContext>
   );
+}
+
+interface ResearchJobPollResponse {
+  status: "queued" | "running" | "completed" | "failed";
+  mode: ResearchSession["mode"];
+  events?: ResearchEvent[];
+  session?: unknown;
+}
+
+function pollingDelay(milliseconds: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
 export function useWorkspace() {

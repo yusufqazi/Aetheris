@@ -31,18 +31,51 @@ describe("interactive report", () => {
 
   afterEach(() => cleanup());
 
-  it("renders one concise local-analysis hierarchy with conditional tabs and mobile accordions", () => {
+  it("renders one concise local-analysis hierarchy with stable tabs and mobile accordions", () => {
     render(<InteractiveReport session={makeDemoSession()} />);
 
     expect(screen.getAllByText("Primary answer", { exact: true })).toHaveLength(1);
     expect(screen.getAllByText("Local analysis", { exact: true })).toHaveLength(1);
     expect(screen.getByRole("heading", { name: "Findings and unresolved evidence" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Findings/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Conflicts/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Open Questions/ })).toBeInTheDocument();
     expect(screen.getByText(/Findings/, { selector: "summary span" })).toBeInTheDocument();
     expect(screen.queryByText("Evidence brief ready")).not.toBeInTheDocument();
     expect(screen.queryByText("Bottom line")).not.toBeInTheDocument();
     expect(screen.queryByText("Aetheris assessment")).not.toBeInTheDocument();
     expect(screen.queryByText(/confidence percentage/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps the investigation architecture and supporting-evidence section visible when categories are empty", () => {
+    const session = makeDemoSession();
+    session.evidence = [];
+    session.results = {
+      ...session.results!,
+      groundedFacts: [],
+      citations: undefined,
+      reportGeneration: {
+        ...session.results!.reportGeneration,
+        citations: undefined,
+        recommendedFollowUpQuestions: [],
+        researchIntelligence: undefined,
+      },
+    };
+
+    render(<InteractiveReport session={session} />);
+
+    expect(screen.getByRole("tab", { name: /Findings 0/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Conflicts 0/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Open Questions 0/ })).toBeInTheDocument();
+    expect(screen.getAllByText("No reviewable findings could be grounded in the uploaded evidence.").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("tab", { name: /Conflicts 0/ }));
+    expect(screen.getAllByText("No meaningful conflicts were detected across the uploaded evidence.").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("tab", { name: /Open Questions 0/ }));
+    expect(screen.getAllByText("No material unanswered questions were identified from the uploaded evidence.").length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "What the strongest passages establish" })).toBeInTheDocument();
+    expect(screen.getByText("No individual passage was strong and distinct enough to drive the conclusion on its own.")).toBeInTheDocument();
   });
 
   it("labels a live session as AI-assisted without repeating the mode", () => {
@@ -150,10 +183,10 @@ describe("interactive report", () => {
     const investigation = buildInvestigationData(session);
     const base = investigation.findings[0];
     const findings = [
-      { ...base, id: "efficacy", statement: "Hemoglobin improved during follow-up.", dimension: "efficacy" as const, citationIds: [citations[0].id], relationships: [] },
-      { ...base, id: "safety-qt-1", statement: "QTc remained a safety concern.", dimension: "safety" as const, citationIds: [citations[1].id], relationships: [] },
-      { ...base, id: "safety-qt-2", statement: "QT prolongation required review.", dimension: "safety" as const, citationIds: [citations[2].id], relationships: [] },
-      { ...base, id: "limitation", statement: "Ferritin remained low during follow-up.", dimension: "limitation" as const, citationIds: [citations[3].id], relationships: [] },
+      { ...base, id: "efficacy", statement: "Hemoglobin improved during follow-up.", dimension: "efficacy" as const, theme: "Efficacy" as const, citationIds: [citations[0].id], relationships: [supportRelationship(citations[0], "efficacy")] },
+      { ...base, id: "safety-qt-1", statement: "QTc remained a safety concern.", dimension: "safety" as const, theme: "Safety" as const, citationIds: [citations[1].id], relationships: [supportRelationship(citations[1], "safety-qt-1")] },
+      { ...base, id: "safety-qt-2", statement: "QT prolongation required review.", dimension: "safety" as const, theme: "Safety" as const, citationIds: [citations[2].id], relationships: [supportRelationship(citations[2], "safety-qt-2")] },
+      { ...base, id: "limitation", statement: "Ferritin remained low during follow-up.", dimension: "limitation" as const, theme: "Study limitations" as const, citationIds: [citations[3].id], relationships: [supportRelationship(citations[3], "limitation")] },
     ];
 
     const selected = selectStrongestEvidenceItems(
@@ -165,6 +198,47 @@ describe("interactive report", () => {
     expect(selected.filter((item) => /\bqtc?\b|qt prolong/i.test(item.supports))).toHaveLength(1);
   });
 
+  it("prefers a decision-relevant follow-up passage over a bare baseline value", () => {
+    const session = makeDemoSession();
+    const investigation = buildInvestigationData(session);
+    const source = getSessionCitations(session)[0];
+    const baseline = {
+      ...source,
+      id: "citation:baseline-ferritin",
+      exactQuote: "Baseline ferritin: 6 ng/mL.",
+      excerpt: "Baseline ferritin: 6 ng/mL.",
+      startOffset: 0,
+      endOffset: 27,
+    };
+    const followUp = {
+      ...source,
+      id: "citation:follow-up-ferritin",
+      exactQuote: "Follow-up ferritin was 14 ng/mL after four weeks and remained below the reference range.",
+      excerpt: "Follow-up ferritin was 14 ng/mL after four weeks and remained below the reference range.",
+      startOffset: 100,
+      endOffset: 188,
+    };
+    const finding = {
+      ...investigation.findings[0],
+      id: "finding:iron-stores",
+      statement: "Iron stores improved but remained depleted after treatment.",
+      dimension: "limitation" as const,
+      citationIds: [baseline.id, followUp.id],
+      relationships: [
+        supportRelationship(baseline, "finding:iron-stores"),
+        supportRelationship(followUp, "finding:iron-stores"),
+      ],
+    };
+
+    const selected = selectStrongestEvidenceItems(
+      { ...investigation, findings: [finding] },
+      [baseline, followUp],
+      "Assess the limitations of the documented treatment response.",
+    );
+
+    expect(selected[0]?.citation.id).toBe(followUp.id);
+  });
+
   it("renders strongest evidence with readable text contrast and size", () => {
     const { container } = render(<InteractiveReport session={makeDemoSession()} />);
     const section = container.querySelector("#strongest-evidence-title")?.closest("section");
@@ -174,3 +248,19 @@ describe("interactive report", () => {
     expect(support).toHaveClass("text-xs", "text-slate-500");
   });
 });
+
+function supportRelationship(citation: ReturnType<typeof getSessionCitations>[number], supportedItemId: string) {
+  return {
+    id: `relationship:${supportedItemId}:${citation.id}`,
+    evidenceId: citation.evidenceId,
+    citationId: citation.id,
+    supportedItemId,
+    relationshipType: "supports" as const,
+    relevanceExplanation: "Supports the selected test finding.",
+    exactQuote: citation.exactQuote ?? citation.excerpt,
+    documentId: citation.documentId,
+    documentName: citation.documentName,
+    page: citation.page,
+    confidence: "high" as const,
+  };
+}

@@ -128,7 +128,7 @@ GEMINI_REQUEST_TIMEOUT_MS=55000
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
 NEXT_PUBLIC_SUPABASE_URL=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
 ```
 
@@ -151,9 +151,9 @@ Open [http://localhost:3000](http://localhost:3000).
 ## Supabase Setup
 
 1. Create a Supabase project.
-2. Run the SQL in [`supabase/schema.sql`](./supabase/schema.sql).
-3. Add the project URL, anon key, and service-role key to `.env.local`.
-4. Configure row-level security policies appropriate for your auth model.
+2. Run the SQL in [`supabase/schema.sql`](./supabase/schema.sql), then the account ownership policies in [`supabase/auth-setup.sql`](./supabase/auth-setup.sql).
+3. Add the Project URL and Publishable Key to `.env.local` using the variables above. These are the only two values needed for browser authentication setup.
+4. Keep `SUPABASE_SERVICE_ROLE_KEY` blank unless a later server-side administrative workflow explicitly needs it. Never place that key in a `NEXT_PUBLIC_*` variable.
 
 ## Vercel Deployment
 

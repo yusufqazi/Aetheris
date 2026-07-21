@@ -13,52 +13,26 @@ import type {
 
 type EvidenceTargetKind = "finding" | "open_question" | "conflict" | "change";
 
-const TOPIC_PATTERNS = {
-  ferritin: /\bferritin\b|iron stores?|iron repletion|oral iron|intravenous iron|\biv iron\b/i,
-  hemoglobin: /\bhemoglobin\b|\bhgb\b|hematologic|\banemia\b/i,
-  fatigue: /\bfatigue\b|energy|symptomatic improvement/i,
-  palpitations: /palpitations?|ambulatory (?:rhythm )?monitor|rhythm monitoring|residual symptoms/i,
-  qt: /\bqtc?\b|qt[- ]prolong|electrocardiogram|\becg\b/i,
-  bloodLoss: /blood loss|bleeding source|heavy menstrual|menorrhagia|gastrointestinal bleed|\bgi bleed/i,
-  ibuprofen: /\bibuprofen\b|\bnsaid/i,
-  omeprazole: /\bomeprazole\b|acid suppress|proton pump|\bppi\b/i,
-  nausea: /\bnausea\b|iron formulation|ferrous/i,
-  orthostatic: /orthostatic|presyncope|postural|\bpropranolol\b/i,
-} as const;
-
-type SemanticTopic = keyof typeof TOPIC_PATTERNS;
-
-export function semanticTopics(text: string): SemanticTopic[] {
-  return (Object.entries(TOPIC_PATTERNS) as Array<[SemanticTopic, RegExp]>)
-    .filter(([, pattern]) => pattern.test(text))
-    .map(([topic]) => topic);
+export function semanticTopics(text: string): string[] {
+  return significantTokens(text);
 }
 
 export function semanticFamily(text: string) {
-  const topics = semanticTopics(text);
-  if (topics.includes("ferritin")) return "ferritin";
-  if (topics.includes("palpitations")) return "palpitations";
-  if (topics.includes("qt")) return "qt";
-  if (topics.includes("bloodLoss") && topics.includes("ibuprofen")) return "ibuprofen-bleeding";
-  if (topics.includes("bloodLoss")) return "blood-loss";
-  if (topics.includes("omeprazole")) return "omeprazole-iron";
-  if (topics.includes("orthostatic")) return "orthostatic";
-  if (topics.includes("nausea")) return "nausea";
-  if (topics.includes("fatigue")) return "fatigue";
-  if (topics.includes("hemoglobin")) return "hemoglobin";
-  return normalizeSemanticText(text).split(" ").slice(0, 8).join(" ");
+  const tokens = significantTokens(text);
+  const numeric = text.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+  return [...tokens.slice(0, 6), ...numeric.slice(0, 2)].sort().join("-");
 }
 
 export function areSemanticallyEquivalent(left: string, right: string) {
-  const leftFamily = semanticFamily(left);
-  const rightFamily = semanticFamily(right);
-  if (leftFamily && leftFamily === rightFamily) return true;
-
   const leftTokens = significantTokens(left);
   const rightTokens = significantTokens(right);
   const shared = leftTokens.filter((token) => rightTokens.includes(token)).length;
   const denominator = Math.max(1, Math.min(leftTokens.length, rightTokens.length));
-  return shared >= 3 && shared / denominator >= 0.72;
+  const leftNumbers: string[] = left.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+  const rightNumbers: string[] = right.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+  const numbersCompatible = leftNumbers.length === 0 || rightNumbers.length === 0 ||
+    leftNumbers.some((value) => rightNumbers.includes(value));
+  return numbersCompatible && shared >= 3 && shared / denominator >= 0.72;
 }
 
 export function buildEvidenceRelationships({
@@ -112,8 +86,9 @@ export function buildEvidenceRelationships({
       citationId: citation.id,
       supportedItemId: targetItemId,
       relationshipType,
-      relevanceExplanation: aiMapping?.relevanceExplanation
-        ?? relevanceExplanationFor(targetText, span.quote, relationshipType),
+      relevanceExplanation: aiMapping && !isVagueRelevanceExplanation(aiMapping.relevanceExplanation)
+        ? aiMapping.relevanceExplanation
+        : relevanceExplanationFor(targetText, span.quote, relationshipType),
       exactQuote: span.quote,
       documentId: citation.documentId,
       documentName: citation.documentName,
@@ -142,10 +117,17 @@ function evidenceCompatibility(
   const sharedTopics = targetTopics.filter((topic) => evidenceTopics.includes(topic));
 
   if (targetTopics.length > 0) {
-    const relevant = sharedTopics.length > 0 && passesTopicGuard(targetTopics, evidenceTopics);
+    const ratio = sharedTopics.length / Math.max(1, Math.min(targetTopics.length, 8));
+    const targetNumbers: string[] = targetText.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+    const evidenceNumbers: string[] = evidenceText.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+    const numericMatch = targetNumbers.length === 0 ||
+      evidenceNumbers.length === 0 ||
+      targetNumbers.some((value) => evidenceNumbers.includes(value));
+    const minimumOverlap = targetKind === "open_question" && targetTopics.length > 3 ? 2 : 1;
+    const relevant = numericMatch && sharedTopics.length >= minimumOverlap && ratio >= 0.2;
     return {
       relevant,
-      confidence: relevant && sharedTopics.length >= 2 ? "high" as const : "medium" as const,
+      confidence: relevant && sharedTopics.length >= 3 ? "high" as const : "medium" as const,
     };
   }
 
@@ -158,14 +140,6 @@ function evidenceCompatibility(
     relevant: overlap >= 2 && ratio >= threshold,
     confidence: ratio >= 0.65 ? "high" as const : "medium" as const,
   };
-}
-
-function passesTopicGuard(targetTopics: SemanticTopic[], evidenceTopics: SemanticTopic[]) {
-  if (targetTopics.includes("ferritin")) return evidenceTopics.includes("ferritin");
-  if (targetTopics.includes("palpitations")) return evidenceTopics.includes("palpitations");
-  if (targetTopics.includes("qt")) return evidenceTopics.includes("qt");
-  if (targetTopics.includes("bloodLoss")) return evidenceTopics.includes("bloodLoss");
-  return targetTopics.some((topic) => evidenceTopics.includes(topic));
 }
 
 function relationshipTypeFor(
@@ -187,20 +161,25 @@ function relevanceExplanationFor(
   quote: string,
   relationshipType: EvidenceRelationshipType,
 ) {
-  const family = semanticFamily(`${targetText} ${quote}`);
+  const claim = targetText.replace(/\s+/g, " ").trim().replace(/[.]+$/, "");
   if (relationshipType === "identifies_missing_evidence") {
-    return "Identifies evidence that remains absent or unresolved in the uploaded record.";
+    return `Identifies evidence that remains absent or unresolved for the selected question: ${claim}.`;
   }
   if (relationshipType === "proposes_follow_up") {
-    return "Documents a follow-up step proposed in the source record.";
+    return `Documents a follow-up step proposed for the selected question: ${claim}.`;
   }
-  if (family === "ferritin") return "Documents the observed ferritin or iron-repletion response relevant to this question.";
-  if (family === "palpitations") return "Documents the course of palpitations or the absence of direct rhythm assessment.";
-  if (family === "qt") return "Documents the QTc measurement or ECG follow-up relevant to this item.";
-  if (family === "blood-loss" || family === "ibuprofen-bleeding") return "Documents the bleeding history or an unresolved source of blood loss.";
-  if (relationshipType === "weakens") return "Documents a limitation that narrows this conclusion.";
-  if (relationshipType === "contradicts") return "Documents evidence that conflicts with this item.";
-  return "Directly documents the observation described by this item.";
+  if (relationshipType === "weakens") return `Documents a limitation that narrows the selected claim: ${claim}.`;
+  if (relationshipType === "contradicts") return `Documents evidence that conflicts with the selected claim: ${claim}.`;
+  const shared = significantTokens(targetText)
+    .filter((token) => significantTokens(quote).includes(token))
+    .slice(0, 4);
+  return shared.length > 0
+    ? `Documents the source observations about ${shared.join(", ")} used in the selected claim.`
+    : `Directly documents the source observation used in the selected claim: ${claim}.`;
+}
+
+function isVagueRelevanceExplanation(value: string) {
+  return /supports? (?:the )?(?:reported|selected|overall) (?:assessment|finding|conclusion)|directly relevant (?:source )?evidence|relevant to the (?:analysis|question)/i.test(value);
 }
 
 function findValidatedAiMapping({
@@ -245,6 +224,8 @@ function significantTokens(text: string) {
   const stop = new Set([
     "the", "and", "that", "with", "from", "this", "were", "was", "for", "but", "not", "into",
     "after", "before", "what", "whether", "does", "will", "could", "would", "should", "entirely",
+    "study", "report", "document", "source", "patient", "patients", "finding", "findings", "evidence",
+    "clinical", "uploaded", "current", "question", "result", "results", "reported", "described",
   ]);
   return Array.from(new Set(
     text.toLowerCase().match(/[a-z0-9.]+/g)?.filter((token) => token.length > 2 && !stop.has(token)) ?? [],

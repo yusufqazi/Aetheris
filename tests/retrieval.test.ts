@@ -36,6 +36,12 @@ describe("source anchoring and retrieval", () => {
       expect(page).toBeDefined();
       expect(page?.text.slice(chunk.startOffset, chunk.endOffset).trim()).toBe(chunk.text);
       expect(chunk.id).toContain(`${document.id}:p${chunk.page}:`);
+      if (chunk.endOffset < (page?.text.length ?? 0)) {
+        expect(chunk.text).toMatch(/[.!?]["')\]]?$/);
+      }
+      if (chunk.startOffset > 0) {
+        expect(page?.text.slice(0, chunk.startOffset).trimEnd()).toMatch(/[.!?]["')\]]?$/);
+      }
     }
   });
 

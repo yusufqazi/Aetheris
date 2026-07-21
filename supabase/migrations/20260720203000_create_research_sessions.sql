@@ -1,6 +1,8 @@
+begin;
+
 create table if not exists public.research_sessions (
   id text primary key,
-  user_id uuid references auth.users(id) on delete cascade default auth.uid(),
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
   question text not null,
   status text not null,
   mode text not null,
@@ -19,47 +21,42 @@ create table if not exists public.research_sessions (
   updated_at timestamptz not null default now()
 );
 
-alter table public.research_sessions
-  add column if not exists user_id uuid references auth.users(id) on delete cascade,
-  add column if not exists pipeline jsonb not null default '[]'::jsonb,
-  add column if not exists events jsonb not null default '[]'::jsonb,
-  add column if not exists agent_executions jsonb not null default '{}'::jsonb,
-  add column if not exists evidence jsonb not null default '[]'::jsonb,
-  add column if not exists report_sections jsonb not null default '[]'::jsonb,
-  add column if not exists metrics jsonb not null default '{}'::jsonb,
-  add column if not exists confidence jsonb,
-  add column if not exists error jsonb;
-
-alter table public.research_sessions
-  alter column user_id set default auth.uid();
+create index if not exists research_sessions_user_created_idx
+  on public.research_sessions (user_id, created_at desc);
 
 alter table public.research_sessions enable row level security;
+alter table public.research_sessions force row level security;
+
+revoke all on table public.research_sessions from anon;
+grant select, insert, update, delete on table public.research_sessions to authenticated;
 
 drop policy if exists "Users can read their own research sessions" on public.research_sessions;
 create policy "Users can read their own research sessions"
   on public.research_sessions
   for select
   to authenticated
-  using (user_id = auth.uid());
+  using ((select auth.uid()) = user_id);
 
 drop policy if exists "Users can create their own research sessions" on public.research_sessions;
 create policy "Users can create their own research sessions"
   on public.research_sessions
   for insert
   to authenticated
-  with check (user_id = auth.uid());
+  with check ((select auth.uid()) = user_id);
 
 drop policy if exists "Users can update their own research sessions" on public.research_sessions;
 create policy "Users can update their own research sessions"
   on public.research_sessions
   for update
   to authenticated
-  using (user_id = auth.uid())
-  with check (user_id = auth.uid());
+  using ((select auth.uid()) = user_id)
+  with check ((select auth.uid()) = user_id);
 
 drop policy if exists "Users can delete their own research sessions" on public.research_sessions;
 create policy "Users can delete their own research sessions"
   on public.research_sessions
   for delete
   to authenticated
-  using (user_id = auth.uid());
+  using ((select auth.uid()) = user_id);
+
+commit;

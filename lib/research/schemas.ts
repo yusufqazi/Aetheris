@@ -160,6 +160,57 @@ export const researchIntelligenceSchema = z.object({
     relevanceExplanation: z.string(),
     confidence: confidenceSchema,
   })).max(24).default([]),
+  structuredClaims: z.array(z.object({
+    id: z.string(),
+    conclusion: z.string(),
+    kind: z.enum(["direct_observation", "inference"]),
+    dimension: z.enum(["efficacy", "safety", "limitation", "context"]),
+    theme: z.string().min(2).max(60).optional(),
+    clinicalImplication: z.string().min(12).max(500).optional(),
+    reasoningSummary: z.string(),
+    evidenceIds: z.array(z.string()).min(1),
+    counterEvidenceIds: z.array(z.string()).default([]),
+    uncertainty: z.string(),
+    confidence: confidenceSchema,
+    priority: z.enum(["primary", "important", "context"]),
+  })).max(10).default([]),
+});
+
+export const researchDirectorOutputSchema = z.object({
+  answerStatus: z.enum(["direct", "partial", "insufficient"]),
+  directAnswer: z.string(),
+  claims: z.array(z.object({
+    conclusion: z.string(),
+    kind: z.enum(["direct_observation", "inference"]),
+    dimension: z.enum(["efficacy", "safety", "limitation", "context"]),
+    theme: z.string().min(2).max(60),
+    clinicalImplication: z.string().min(12).max(500),
+    reasoningSummary: z.string(),
+    evidenceIds: z.array(z.string()).min(1).max(6),
+    counterEvidenceIds: z.array(z.string()).max(4),
+    uncertainty: z.string(),
+    confidence: confidenceSchema,
+  })).max(10),
+  trajectory: z.array(z.object({
+    label: z.string(),
+    finding: z.string(),
+    interpretation: z.string(),
+    evidenceIds: z.array(z.string()).min(1).max(4),
+  })).max(6),
+  contradictions: z.array(z.object({
+    issue: z.string(),
+    sourcePositions: z.array(z.string()).min(2).max(4),
+    reconciliation: z.string(),
+    impact: z.string(),
+    evidenceIds: z.array(z.string()).min(2).max(6),
+  })).max(5),
+  unansweredQuestions: z.array(z.object({
+    question: z.string(),
+    known: z.string(),
+    missing: z.string(),
+    whyItMatters: z.string(),
+    evidenceIds: z.array(z.string()).max(4),
+  })).max(6),
 });
 
 export const reportOutputSchema = z.object({

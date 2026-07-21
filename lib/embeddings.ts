@@ -3,6 +3,8 @@ import OpenAI from "openai";
 
 import { getLlmConfiguration, type LlmProvider } from "@/lib/llm";
 import { chunkDocument } from "@/lib/pdf.shared";
+import { requestedAnswerDimensions } from "@/lib/research/claims";
+import { semanticFamily } from "@/lib/research/evidence-relationships";
 import type {
   EvidenceItem,
   RetrievalMethod,
@@ -139,15 +141,16 @@ export function rankEvidenceChunks(
   const maxLexical = Math.max(1, ...lexicalScores);
   const method: RetrievalMethod = queryEmbedding ? "embedding" : "lexical";
 
-  return chunks
+  const scored = chunks
     .map((chunk, chunkIndex) => {
       const lexicalScore = lexicalScores[chunkIndex] / maxLexical;
       const similarityScore = queryEmbedding && chunk.embedding
         ? clampSimilarity(cosineSimilarity(queryEmbedding, chunk.embedding))
         : null;
-      const score = similarityScore === null
+      const baseScore = similarityScore === null
         ? lexicalScore
         : similarityScore * 0.82 + lexicalScore * 0.18;
+      const score = Math.min(1, baseScore + evidenceSpecificityBonus(chunk.text, query));
 
       return {
         ...chunk,
@@ -158,8 +161,9 @@ export function rankEvidenceChunks(
         retrievalMethod: method,
       } satisfies SearchChunk;
     })
-    .sort((left, right) => right.score - left.score)
-    .slice(0, limit)
+    .sort((left, right) => right.score - left.score);
+
+  return selectDiverseEvidence(scored, query, limit)
     .map((chunk, position) => ({ ...chunk, rank: position + 1 }));
 }
 
@@ -240,4 +244,131 @@ function cosineSimilarity(left: number[], right: number[]) {
 
 function clampSimilarity(value: number) {
   return Math.max(0, Math.min(1, (value + 1) / 2));
+}
+
+function selectDiverseEvidence(chunks: SearchChunk[], query: string, limit: number) {
+  const selected: SearchChunk[] = [];
+  const remaining = [...chunks];
+  const requestedDimensions = requestedAnswerDimensions(query);
+  const requestedFacets = requestedEvidenceFacets(query);
+
+  // Diagnosis, treatment, objective support, and unresolved decision inputs
+  // are distinct evidence jobs even when they share a broad UI category.
+  for (const facet of requestedFacets) {
+    if (selected.length >= limit) break;
+    const index = remaining.findIndex((chunk) => chunkEvidenceFacets(chunk.text).includes(facet));
+    if (index < 0) continue;
+    selected.push(remaining[index]);
+    remaining.splice(index, 1);
+  }
+
+  // Reserve one strong passage for each part of a multi-part research question.
+  for (const dimension of requestedDimensions) {
+    if (selected.length >= limit) break;
+    const index = remaining.findIndex((chunk) => chunkDimensions(chunk.text).includes(dimension));
+    if (index < 0) continue;
+    selected.push(remaining[index]);
+    remaining.splice(index, 1);
+  }
+
+  while (selected.length < limit && remaining.length > 0) {
+    const topRemainingScore = Math.max(...remaining.map((chunk) => chunk.score));
+    const seenFamilies = new Set(selected.map((chunk) => semanticFamily(chunk.text)));
+    const novelCandidates = remaining.filter((chunk) =>
+      !seenFamilies.has(semanticFamily(chunk.text)) &&
+      (chunk.score >= topRemainingScore * 0.55 || chunk.matchedTerms.length > 0),
+    );
+    const pool = novelCandidates.length > 0 ? novelCandidates : remaining;
+    const next = [...pool].sort((left, right) =>
+      diversifiedScore(right, selected) - diversifiedScore(left, selected),
+    )[0];
+    selected.push(next);
+    remaining.splice(remaining.indexOf(next), 1);
+  }
+
+  return selected;
+}
+
+function diversifiedScore(candidate: SearchChunk, selected: SearchChunk[]) {
+  const newDocument = selected.every((item) => item.documentId !== candidate.documentId);
+  const samePage = selected.some((item) =>
+    item.documentId === candidate.documentId && item.page === candidate.page,
+  );
+  const familyRepeated = selected.some((item) => semanticFamily(item.text) === semanticFamily(candidate.text));
+  const overlap = Math.max(0, ...selected.map((item) => tokenOverlap(candidate.text, item.text)));
+  return candidate.score
+    + Number(newDocument) * 0.06
+    - Number(samePage) * 0.04
+    - Number(familyRepeated) * 0.28
+    - overlap * 0.18;
+}
+
+function chunkDimensions(text: string) {
+  const dimensions = [] as ReturnType<typeof requestedAnswerDimensions>;
+  if (/efficacy|effective|response|improv|benefit|outcome|endpoint|decreased|increased|quality.of.life/i.test(text)) {
+    dimensions.push("efficacy");
+  }
+  if (/safety|adverse|risk|harm|interaction|medication|drug|qtc?|arrhythmia|bleed|nausea|headache/i.test(text)) {
+    dimensions.push("safety");
+  }
+  if (/limitation|limited|uncertain|missing|unresolved|excluded|not (?:measured|established|evaluated)|follow-up is needed|generaliz/i.test(text)) {
+    dimensions.push("limitation");
+  }
+  if (dimensions.length === 0) dimensions.push("context");
+  return dimensions;
+}
+
+function evidenceSpecificityBonus(text: string, query: string) {
+  const numeric = /\b\d+(?:\.\d+)?\s*(?:%|mg|g\/dL|ng\/mL|mmol\/L|ms|weeks?|months?|participants?|patients?)\b|\bp\s*[=<]\s*0?\.\d+/i.test(text);
+  const qualifying = /does not prove|not establish|uncertain|remains? (?:low|unknown)|excluded|limitation/i.test(text);
+  const diagnostic = /\b(?:diagnos(?:is|ed)|strongly support\w*|consistent with|meets? (?:the )?criteria|leading (?:diagnosis|interpretation)|confirmed)\b/i.test(text);
+  const treatmentDecision = /\b(?:recommend\w*|should|start\w*|initiat\w*|continue\w*|defer\w*|delay\w*|hold|until|proceed\w*|monitor\w*|obtain\w*|perform\w*)\b/i.test(text);
+  const objective = /\b(?:laborator|biomarker|imaging|patholog|biopsy|culture|antibod|protein|creatinine|complement|measurement|result)\w*\b/i.test(text);
+  const asksDiagnosis = requestedEvidenceFacets(query).includes("diagnosis");
+  const asksTreatment = requestedEvidenceFacets(query).includes("treatment");
+  return Number(numeric) * 0.035
+    + Number(qualifying) * 0.025
+    + Number(diagnostic && asksDiagnosis) * 0.06
+    + Number(treatmentDecision && asksTreatment) * 0.06
+    + Number(objective) * 0.035;
+}
+
+type EvidenceFacet = "diagnosis" | "treatment" | "objective" | "safety" | "longitudinal" | "uncertainty" | "outcome" | "context";
+
+function requestedEvidenceFacets(query: string): EvidenceFacet[] {
+  const facets: EvidenceFacet[] = [];
+  const add = (facet: EvidenceFacet) => {
+    if (!facets.includes(facet)) facets.push(facet);
+  };
+  if (/\b(?:diagnos|cause|etiolog|leading interpretation|explain(?:s|ed)? the presentation)\b/i.test(query)) add("diagnosis");
+  if (/\b(?:treat|therap|manage|management|recommend|should|decision|next step|proceed|defer|delay|monitor)\w*\b/i.test(query)) add("treatment");
+  if (/\b(?:laborator|biomarker|imaging|patholog|biopsy|culture|test result|measurement)\w*\b/i.test(query)) add("objective");
+  if (/\b(?:safety|risk|harm|adverse|contraindicat|concern|tradeoff|trade-off)\w*\b/i.test(query)) add("safety");
+  if (/\b(?:trend|trajectory|longitudinal|over time|follow-up|progress|improv|worsen)\w*\b/i.test(query)) add("longitudinal");
+  if (/\b(?:uncertain|unknown|missing|gap|unresolved|limitation|excluded|generaliz|remain(?:s|ing)? evidence)\w*\b/i.test(query)) add("uncertainty");
+  if (/\b(?:efficacy|response|outcome|benefit|effect)\w*\b/i.test(query)) add("outcome");
+  return facets.length > 0 ? facets : ["context"];
+}
+
+function chunkEvidenceFacets(text: string): EvidenceFacet[] {
+  const facets: EvidenceFacet[] = [];
+  const add = (facet: EvidenceFacet) => {
+    if (!facets.includes(facet)) facets.push(facet);
+  };
+  if (/\b(?:diagnos(?:is|ed)|strongly support\w*|consistent with|meets? (?:the )?criteria|leading (?:diagnosis|interpretation)|confirmed)\b/i.test(text)) add("diagnosis");
+  if (/\b(?:recommend\w*|should|start\w*|initiat\w*|continue\w*|defer\w*|delay\w*|hold|until|proceed\w*|monitor\w*|obtain\w*|perform\w*)\b/i.test(text)) add("treatment");
+  if (/\b(?:laborator|biomarker|imaging|patholog|biopsy|culture|antibod|protein|creatinine|complement|measurement|result)\w*\b/i.test(text)) add("objective");
+  if (/\b(?:safety|risk|harm|adverse|contraindicat|concern|complication|toxicity)\w*\b/i.test(text)) add("safety");
+  if (/\b(?:baseline|follow-up|later|earlier|trend|trajectory|improv\w*|worsen\w*|increas\w*|decreas\w*)\b/i.test(text)) add("longitudinal");
+  if (/\b(?:uncertain|unknown|missing|pending|not (?:measured|performed|established|available)|unresolved|limitation)\w*\b/i.test(text)) add("uncertainty");
+  if (/\b(?:efficacy|response|outcome|benefit|effect|endpoint)\w*\b/i.test(text)) add("outcome");
+  return facets.length > 0 ? facets : ["context"];
+}
+
+function tokenOverlap(left: string, right: string) {
+  const leftTokens = tokenize(left);
+  const rightTokens = tokenize(right);
+  const shared = leftTokens.filter((token) => rightTokens.includes(token)).length;
+  const union = new Set([...leftTokens, ...rightTokens]).size;
+  return union === 0 ? 0 : shared / union;
 }
