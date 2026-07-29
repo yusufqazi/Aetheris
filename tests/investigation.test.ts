@@ -99,6 +99,47 @@ describe("investigation summary model", () => {
     )).toBe(false);
   });
 
+  it("drops answered questions while preserving decision-changing uncertainty", () => {
+    const session = makeDemoSession();
+    const pendingCulture = "Final blood culture results remain pending.";
+    const finalCulture = "Final blood cultures grew Escherichia coli.";
+    const obstruction = "Possible urinary obstruction has not been excluded and may require source-control intervention.";
+    const statements = [pendingCulture, finalCulture, obstruction];
+    session.question = "What source-control evidence remains unresolved before management is finalized?";
+    session.documents = statements.map((text, index) => ({
+      ...session.documents[index],
+      id: `document:question-state:${index}`,
+      name: `Question_State_${index + 1}.pdf`,
+      text,
+      pageCount: 1,
+      pages: [{ number: 1, text, startOffset: 0, endOffset: text.length }],
+    }));
+    const facts = [
+      makeFact(session, 0, "limitation", pendingCulture, "evidence:pending-culture"),
+      makeFact(session, 1, "finding", finalCulture, "evidence:final-culture"),
+      makeFact(session, 2, "safety_observation", obstruction, "evidence:obstruction"),
+    ];
+    session.evidence = facts.map(makeEvidence);
+    session.results = {
+      ...session.results!,
+      groundedFacts: facts,
+      citations: undefined,
+      reportGeneration: {
+        ...session.results!.reportGeneration,
+        citations: undefined,
+        recommendedFollowUpQuestions: [],
+        researchIntelligence: undefined,
+      },
+    };
+
+    const questions = buildInvestigationData(session).openQuestions;
+
+    expect(questions.some((item) => /culture/i.test(item.question))).toBe(false);
+    expect(questions.some((item) => /obstruction|source-control/i.test(
+      `${item.question} ${item.known} ${item.whyItMatters}`,
+    ))).toBe(true);
+  });
+
   it("identifies a concrete cross-document outcome disagreement and preserves both source positions", () => {
     const session = makeDemoSession();
     const positiveText = "AX-217 improved disease activity by 34% versus 18% for placebo.";
@@ -223,6 +264,118 @@ describe("investigation summary model", () => {
     expect(conflict?.explanation).toMatch(/recommended next step|not be combined/i);
   });
 
+  it("does not compare unrelated recommendations as a conflict", () => {
+    const session = makeDemoSession();
+    const anticoagulation = "Begin therapeutic anticoagulation for the documented pulmonary embolism.";
+    const biopsy = "Defer renal biopsy until the platelet count recovers.";
+    session.question = "Summarize the current treatment priorities and unresolved evidence.";
+    session.documents = [
+      {
+        ...session.documents[0],
+        id: "document:pulmonary",
+        name: "Pulmonary_Consult.pdf",
+        text: anticoagulation,
+        pageCount: 1,
+        pages: [{ number: 1, text: anticoagulation, startOffset: 0, endOffset: anticoagulation.length }],
+      },
+      {
+        ...session.documents[1],
+        id: "document:renal",
+        name: "Renal_Consult.pdf",
+        text: biopsy,
+        pageCount: 1,
+        pages: [{ number: 1, text: biopsy, startOffset: 0, endOffset: biopsy.length }],
+      },
+    ];
+    const facts = [
+      makeFact(session, 0, "recommendation", anticoagulation, "evidence:anticoagulation"),
+      makeFact(session, 1, "recommendation", biopsy, "evidence:biopsy"),
+    ];
+    session.evidence = facts.map(makeEvidence);
+    session.results = {
+      ...session.results!,
+      groundedFacts: facts,
+      citations: undefined,
+      reportGeneration: {
+        ...session.results!.reportGeneration,
+        citations: undefined,
+        recommendedFollowUpQuestions: [],
+        researchIntelligence: undefined,
+      },
+    };
+
+    expect(buildInvestigationData(session).conflicts).toEqual([]);
+  });
+
+  it("does not treat compatible recommendations or paraphrased conclusions as conflicts", () => {
+    const session = makeDemoSession();
+    const start = "Start ceftriaxone now for the suspected bacterial infection.";
+    const continueTreatment = "Continue ceftriaxone while the blood cultures are pending.";
+    const diagnosis = "Imaging supports pulmonary embolism as the leading diagnosis.";
+    const diagnosisParaphrase = "Pulmonary embolism is the most likely diagnosis based on imaging.";
+    const statements = [start, continueTreatment, diagnosis, diagnosisParaphrase];
+    session.documents = statements.map((text, index) => ({
+      ...session.documents[index % session.documents.length],
+      id: `document:compatible:${index}`,
+      name: `Compatible_Source_${index + 1}.pdf`,
+      text,
+      pageCount: 1,
+      pages: [{ number: 1, text, startOffset: 0, endOffset: text.length }],
+    }));
+    const facts = [
+      makeFact(session, 0, "recommendation", start, "evidence:start"),
+      makeFact(session, 1, "recommendation", continueTreatment, "evidence:continue"),
+      makeFact(session, 2, "finding", diagnosis, "evidence:diagnosis"),
+      makeFact(session, 3, "finding", diagnosisParaphrase, "evidence:diagnosis-paraphrase"),
+    ];
+    session.evidence = facts.map(makeEvidence);
+    session.results = {
+      ...session.results!,
+      groundedFacts: facts,
+      citations: undefined,
+      reportGeneration: {
+        ...session.results!.reportGeneration,
+        citations: undefined,
+        recommendedFollowUpQuestions: [],
+        researchIntelligence: undefined,
+      },
+    };
+
+    expect(buildInvestigationData(session).conflicts).toEqual([]);
+  });
+
+  it("does not treat different outcomes for the same intervention as an outcome conflict", () => {
+    const session = makeDemoSession();
+    const activity = "AX-217 improved disease activity compared with baseline.";
+    const sleep = "AX-217 did not improve sleep quality during follow-up.";
+    session.documents = [activity, sleep].map((text, index) => ({
+      ...session.documents[index],
+      id: `document:endpoint:${index}`,
+      name: `Endpoint_Source_${index + 1}.pdf`,
+      text,
+      pageCount: 1,
+      pages: [{ number: 1, text, startOffset: 0, endOffset: text.length }],
+    }));
+    const facts = [
+      makeFact(session, 0, "finding", activity, "evidence:activity"),
+      makeFact(session, 1, "finding", sleep, "evidence:sleep"),
+    ];
+    session.evidence = facts.map(makeEvidence);
+    session.results = {
+      ...session.results!,
+      groundedFacts: facts,
+      citations: undefined,
+      reportGeneration: {
+        ...session.results!.reportGeneration,
+        citations: undefined,
+        recommendedFollowUpQuestions: [],
+        researchIntelligence: undefined,
+      },
+    };
+
+    expect(buildInvestigationData(session).conflicts).toEqual([]);
+  });
+
   it("surfaces a treatment-benefit versus treatment-risk tradeoff across sources", () => {
     const session = makeDemoSession();
     const benefit = "Continued intravenous fluids may support stabilization during early resuscitation.";
@@ -271,6 +424,52 @@ describe("investigation summary model", () => {
     expect(conflict?.documentNames).toEqual(["Acute_Care_Note.pdf", "Risk_Review.pdf"]);
     expect(conflict?.positions.map((position) => position.statement)).toEqual([benefit, risk]);
     expect(conflict?.explanation).toMatch(/competing decision priorities|risk/i);
+  });
+
+  it("merges repeated cards describing the same underlying management tradeoff", () => {
+    const session = makeDemoSession();
+    const statements = [
+      "Start NX-410 now because prompt treatment is expected to improve disease control.",
+      "Proceed with immediate NX-410 therapy to maintain disease control.",
+      "Delay NX-410 until the marked liver enzyme elevation improves.",
+      "Withhold NX-410 while active hepatic toxicity remains unresolved.",
+    ];
+    session.question = "Should NX-410 begin now despite the documented hepatic risk?";
+    session.documents = statements.map((text, index) => ({
+      ...session.documents[index % session.documents.length],
+      id: `document:duplicate-conflict:${index}`,
+      name: `Conflict_Source_${index + 1}.pdf`,
+      text,
+      pageCount: 1,
+      pages: [{ number: 1, text, startOffset: 0, endOffset: text.length }],
+    }));
+    const facts = statements.map((text, index) =>
+      makeFact(
+        session,
+        index,
+        "recommendation",
+        text,
+        `evidence:duplicate-conflict:${index}`,
+      ),
+    );
+    session.evidence = facts.map(makeEvidence);
+    session.results = {
+      ...session.results!,
+      groundedFacts: facts,
+      citations: undefined,
+      reportGeneration: {
+        ...session.results!.reportGeneration,
+        citations: undefined,
+        recommendedFollowUpQuestions: [],
+        researchIntelligence: undefined,
+      },
+    };
+
+    const conflicts = buildInvestigationData(session).conflicts;
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].positions).toHaveLength(2);
+    expect(conflicts[0].citationIds).toHaveLength(4);
+    expect(conflicts[0].positions.every((position) => position.citationIds.length >= 2)).toBe(true);
   });
 
   it("merges equivalent claims even when generated theme labels differ", () => {
@@ -462,6 +661,174 @@ describe("investigation summary model", () => {
     expect(investigation.findings.some((item) => item.dimension === "efficacy")).toBe(true);
     expect(investigation.directAnswer).toMatch(/uploaded documents|increased|improved|follow-up/i);
     expect(investigation.directAnswer).not.toMatch(/significant|demonstrated efficacy/i);
+  });
+
+  it("replaces a premature incomplete answer with the best grounded synthesis", () => {
+    const session = makeSemanticMappingSession();
+    session.results!.reportGeneration.researchIntelligence = {
+      answerStatus: "partial",
+      directAnswer: "The uploaded documents do not establish a complete answer to the research question.",
+      strongestSupportedConclusion: "A clinically meaningful response is documented.",
+      strongestCounterpoint: "Important follow-up evidence remains unresolved.",
+      evidenceTrajectory: [],
+      interactionPathways: [],
+      contradictions: [],
+      decisionChangingUnknowns: [],
+      evidenceMappings: [],
+    };
+
+    const investigation = buildInvestigationData(session);
+
+    expect(investigation.directAnswer).not.toMatch(/do not establish a complete answer/i);
+    expect(investigation.directAnswer).toMatch(/evidence|improv|increase|hemoglobin|ferritin|QTc/i);
+    expect(investigation.directAnswer).toMatch(/[.!?]$/);
+  });
+
+  it("prioritizes diagnosis, treatment decisions, and objective evidence over patient preference", () => {
+    const session = makeDemoSession();
+    const statements = [
+      "The patient has requested discharge home as soon as possible.",
+      "The patient has a remote family history of hypertension.",
+      "Septic shock remains the leading diagnosis based on hypotension and elevated lactate.",
+      "Broad-spectrum antibiotics and norepinephrine should begin immediately.",
+      "Blood cultures were positive and lactate was 5.2 mmol/L.",
+    ];
+    session.question = "What is the leading diagnosis, and which immediate treatment should be prioritized?";
+    session.documents = statements.map((text, index) => ({
+      ...session.documents[index % session.documents.length],
+      id: `document:priority:${index}`,
+      name: `Priority_Source_${index + 1}.pdf`,
+      text,
+      pageCount: 1,
+      pages: [{ number: 1, text, startOffset: 0, endOffset: text.length }],
+    }));
+    const facts = [
+      makeFact(session, 0, "finding", statements[0], "evidence:preference"),
+      makeFact(session, 1, "finding", statements[1], "evidence:background"),
+      makeFact(session, 2, "finding", statements[2], "evidence:diagnosis"),
+      makeFact(session, 3, "recommendation", statements[3], "evidence:treatment"),
+      {
+        ...makeFact(session, 4, "finding", statements[4], "evidence:objective"),
+        category: "statistical" as const,
+      },
+    ];
+    session.evidence = facts.map(makeEvidence);
+    session.results = {
+      ...session.results!,
+      groundedFacts: facts,
+      citations: undefined,
+      reportGeneration: {
+        ...session.results!.reportGeneration,
+        citations: undefined,
+        recommendedFollowUpQuestions: [],
+        researchIntelligence: {
+          answerStatus: "direct",
+          directAnswer: "Septic shock is the leading diagnosis, and immediate antimicrobial and vasopressor treatment is supported.",
+          strongestSupportedConclusion: statements[2],
+          strongestCounterpoint: "The conclusion remains limited to the uploaded records.",
+          evidenceTrajectory: [],
+          interactionPathways: [],
+          contradictions: [],
+          decisionChangingUnknowns: [],
+          evidenceMappings: [],
+          structuredClaims: [{
+            id: "claim:model-preference",
+            conclusion: statements[0],
+            kind: "direct_observation",
+            dimension: "context",
+            theme: "Patient preferences",
+            clinicalImplication: "This may affect implementation after immediate clinical stabilization.",
+            reasoningSummary: "The preference is directly documented in the uploaded record.",
+            evidenceIds: ["evidence:preference"],
+            counterEvidenceIds: [],
+            uncertainty: "Clinical readiness for discharge is separate from this preference.",
+            confidence: "high",
+            priority: "primary",
+          }],
+        },
+      },
+    };
+
+    const findings = buildInvestigationData(session).findings;
+    const diagnosisIndex = findings.findIndex((finding) => /leading diagnosis/i.test(finding.statement));
+    const treatmentIndex = findings.findIndex((finding) => /antibiotics|norepinephrine/i.test(finding.statement));
+    const objectiveIndex = findings.findIndex((finding) => /blood cultures|lactate/i.test(finding.statement));
+    const preferenceIndex = findings.findIndex((finding) => /requested discharge/i.test(finding.statement));
+
+    expect(diagnosisIndex).toBe(0);
+    expect(treatmentIndex).toBeGreaterThanOrEqual(0);
+    expect(objectiveIndex).toBeGreaterThanOrEqual(0);
+    expect(preferenceIndex).toBeGreaterThan(objectiveIndex);
+    expect(preferenceIndex).toBeGreaterThan(treatmentIndex);
+    expect(findings[preferenceIndex].priority).toBe("Supporting context");
+    expect(findings[0].priority).toBe("Primary finding");
+  });
+
+  it("ranks a direct establishing passage above earlier weaker evidence", () => {
+    const session = makeDemoSession();
+    const weak = "Septic shock was considered in the differential diagnosis.";
+    const strong = "The intensive care assessment confirms septic shock as the leading diagnosis.";
+    session.question = "What is the leading diagnosis?";
+    session.documents = [weak, strong].map((text, index) => ({
+      ...session.documents[index],
+      id: `document:evidence-rank:${index}`,
+      name: `Evidence_Rank_${index + 1}.pdf`,
+      text,
+      pageCount: 1,
+      pages: [{ number: 1, text, startOffset: 0, endOffset: text.length }],
+    }));
+    const facts = [
+      makeFact(session, 0, "finding", weak, "evidence:weak"),
+      makeFact(session, 1, "finding", strong, "evidence:strong"),
+    ];
+    session.evidence = facts.map((fact, index) => ({
+      ...makeEvidence(fact, index),
+      lexicalScore: index === 0 ? 1 : 0.2,
+    }));
+    session.results = {
+      ...session.results!,
+      groundedFacts: facts,
+      citations: undefined,
+      reportGeneration: {
+        ...session.results!.reportGeneration,
+        citations: undefined,
+        recommendedFollowUpQuestions: [],
+        researchIntelligence: {
+          answerStatus: "direct",
+          directAnswer: "Septic shock is the leading diagnosis.",
+          strongestSupportedConclusion: "Septic shock is the leading diagnosis.",
+          strongestCounterpoint: "The conclusion remains limited to the uploaded record.",
+          evidenceTrajectory: [],
+          interactionPathways: [],
+          contradictions: [],
+          decisionChangingUnknowns: [],
+          evidenceMappings: [],
+          structuredClaims: [{
+            id: "claim:leading-diagnosis",
+            conclusion: "Septic shock is the leading diagnosis.",
+            kind: "inference",
+            dimension: "context",
+            theme: "Diagnosis",
+            clinicalImplication: "This establishes the diagnosis around which immediate management should be organized.",
+            reasoningSummary: "The conclusion synthesizes the diagnostic assessments in the uploaded sources.",
+            evidenceIds: ["evidence:weak"],
+            counterEvidenceIds: [],
+            uncertainty: "The conclusion remains limited to the uploaded sources.",
+            confidence: "high",
+            priority: "primary",
+          }],
+        },
+      },
+    };
+
+    const finding = buildInvestigationData(session).findings.find(
+      (item) => item.statement === "Septic shock is the leading diagnosis.",
+    );
+
+    expect(finding).toBeDefined();
+    expect(finding?.relationships[0].exactQuote).toBe(strong);
+    expect(finding?.citationIds[0]).toBe(finding?.relationships[0].citationId);
+    expect(finding?.relationships.some((relationship) => relationship.exactQuote === weak)).toBe(true);
   });
 });
 

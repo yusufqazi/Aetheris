@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import { textItemsToStructuredText } from "@/lib/pdf.shared";
 import {
   areEquivalentStatements,
+  assessPrimaryAnswerEvidence,
+  buildBestSupportedAnswer,
   buildGroundedReport,
   classifyContentType,
   extractGroundedFacts,
+  isIncompletePrimaryAnswer,
 } from "@/lib/research/grounding";
 import type { EvidenceItem, GroundedFact } from "@/lib/types";
 
@@ -42,6 +45,10 @@ describe("research content normalization", () => {
       "QTc improved from 477 ms to 449 ms.",
       "QTc improved from 477 ms to 459 ms.",
     )).toBe(false);
+    expect(areEquivalentStatements(
+      "Septic shock remains the leading diagnosis.",
+      "Septic shock remains the leading diagnosis based on hypotension and elevated lactate.",
+    )).toBe(true);
   });
 
   it("preserves the source excerpt while cleaning only the display statement", () => {
@@ -192,6 +199,141 @@ describe("research content normalization", () => {
     expect(report.executiveSummary).toMatch(/vasopressor/i);
     expect(report.executiveSummary).toMatch(/fluid|volume overload|pulmonary/i);
     expect(report.executiveSummary).toMatch(/source-control|imaging|unresolved/i);
+    expect(report.executiveSummary).toMatch(/^The evidence most strongly supports/i);
+    expect(report.executiveSummary).toMatch(/Management should prioritize/i);
+    expect(report.executiveSummary).toMatch(/main constraint|central tradeoff/i);
+    expect(report.executiveSummary).toMatch(/decision still depends/i);
+    expect(report.executiveSummary).not.toMatch(/Treatment priority:|Key tradeoff:|Remaining evidence:/i);
+    expect(report.executiveSummary).not.toContain("\n");
+    for (const statement of statements) {
+      expect(report.executiveSummary).not.toContain(statement.text);
+    }
+    expect(report.executiveSummary.split(/\s+/).length).toBeLessThan(130);
+  });
+
+  it("preserves the strongest supported conclusion when one requested detail remains unresolved", () => {
+    const statements: Array<Pick<GroundedFact, "text" | "contentType" | "category">> = [
+      {
+        text: "Systemic lupus erythematosus is the leading diagnosis based on positive ANA, elevated anti-dsDNA, and low complement levels.",
+        contentType: "finding",
+        category: "context",
+      },
+      {
+        text: "Proteinuria and microscopic hematuria raise concern for renal involvement.",
+        contentType: "finding",
+        category: "context",
+      },
+      {
+        text: "Long-term immunosuppressive therapy should be deferred until kidney biopsy and urine protein quantification are completed.",
+        contentType: "recommendation",
+        category: "context",
+      },
+      {
+        text: "The class and severity of renal involvement remain uncertain pending kidney biopsy.",
+        contentType: "limitation",
+        category: "limitation",
+      },
+    ];
+    const facts = statements.map((statement, index) => ({
+      id: `fact:qualified:${index}`,
+      ...statement,
+      evidenceId: `evidence:qualified:${index}`,
+      documentId: `document:qualified:${index}`,
+      documentName: `Qualified_Source_${index + 1}.pdf`,
+      page: 1,
+      excerpt: statement.text,
+      relevance: "Supports the qualified synthesis.",
+    }));
+
+    const answer = buildBestSupportedAnswer(
+      "What diagnosis is best supported, is there renal involvement, when should treatment begin, and what remains uncertain?",
+      facts,
+    );
+
+    expect(answer).toMatch(/systemic lupus erythematosus/i);
+    expect(answer).toMatch(/renal|proteinuria|hematuria/i);
+    expect(answer).toMatch(/defer|biopsy|quantification/i);
+    expect(answer).toMatch(/uncertain|depends on|biopsy/i);
+    expect(isIncompletePrimaryAnswer(answer)).toBe(false);
+    expect(isIncompletePrimaryAnswer(
+      "The uploaded documents do not establish a complete answer to the research question.",
+    )).toBe(true);
+  });
+
+  it("answers only supported parts when the current evidence is sparse", () => {
+    const facts: GroundedFact[] = [
+      {
+        id: "fact:limited:efficacy",
+        text: "Hemoglobin improved from 8.7 g/dL to 10.4 g/dL after treatment.",
+        contentType: "longitudinal_change",
+        category: "efficacy",
+        evidenceId: "evidence:limited:efficacy",
+        documentId: "document:limited",
+        documentName: "Limited_Source.pdf",
+        page: 1,
+        excerpt: "Hemoglobin improved from 8.7 g/dL to 10.4 g/dL after treatment.",
+        relevance: "Directly documents the observed response.",
+      },
+      {
+        id: "fact:limited:metadata",
+        text: "Document purpose: This report summarizes treatment response for review.",
+        contentType: "finding",
+        category: "context",
+        evidenceId: "evidence:limited:metadata",
+        documentId: "document:limited",
+        documentName: "Limited_Source.pdf",
+        page: 1,
+        excerpt: "Document purpose: This report summarizes treatment response for review.",
+        relevance: "Document metadata.",
+      },
+    ];
+    const question = "Summarize efficacy, safety, and important limitations.";
+    const coverage = assessPrimaryAnswerEvidence(question, facts);
+    const answer = buildBestSupportedAnswer(question, facts);
+
+    expect(coverage.evidenceLimited).toBe(true);
+    expect(coverage.supportedParts).toEqual(["efficacy"]);
+    expect(coverage.unsupportedParts).toEqual(["safety", "limitations"]);
+    expect(answer).toMatch(/hemoglobin improved from 8\.7 g\/dL to 10\.4 g\/dL/i);
+    expect(answer).toMatch(/safety profile.*limitations.*cannot be determined/i);
+    expect(answer).not.toMatch(/document purpose|summarizes treatment response|review/i);
+  });
+
+  it("does not promote metadata and table labels into a low-context answer", () => {
+    const metadataFacts: GroundedFact[] = [
+      {
+        id: "fact:metadata:purpose",
+        text: "This document summarizes the available clinical information.",
+        contentType: "finding",
+        category: "context",
+        evidenceId: "evidence:metadata:purpose",
+        documentId: "document:metadata",
+        documentName: "Metadata.pdf",
+        page: 1,
+        excerpt: "This document summarizes the available clinical information.",
+        relevance: "Document-purpose text.",
+      },
+      {
+        id: "fact:metadata:table",
+        text: "Measure Result Value Status",
+        contentType: "evidence_excerpt",
+        category: "context",
+        evidenceId: "evidence:metadata:table",
+        documentId: "document:metadata",
+        documentName: "Metadata.pdf",
+        page: 1,
+        excerpt: "Measure Result Value Status",
+        relevance: "Table header.",
+      },
+    ];
+
+    const answer = buildBestSupportedAnswer(
+      "What is the diagnosis and which treatment should be prioritized?",
+      metadataFacts,
+    );
+
+    expect(answer).toMatch(/diagnosis or cause.*treatment priority.*cannot be determined/i);
+    expect(answer).not.toMatch(/document summarizes|measure result|value status|metadata/i);
   });
 });
 

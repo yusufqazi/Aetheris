@@ -14,6 +14,7 @@ import {
   type UploadedDocument,
 } from "@/lib/types";
 import { createClaimCitations } from "@/lib/research/evidence-spans";
+import { assessEvidenceConfidence } from "@/lib/research/confidence";
 
 export function assembleResearchArtifacts(
   bundle: AnalysisBundle,
@@ -21,8 +22,8 @@ export function assembleResearchArtifacts(
   documents: UploadedDocument[],
 ) {
   const citations = createCitations(evidence, bundle.groundedFacts ?? [], documents);
-  const consensusClaims = createConsensusClaims(bundle, citations);
   const confidence = createConfidenceProfile(bundle, evidence, citations, documents);
+  const consensusClaims = createConsensusClaims(bundle, citations, confidence);
   const sections = createReportSections(bundle, citations, confidence);
 
   const reportGeneration = {
@@ -62,33 +63,46 @@ export function createConfidenceProfile(
   citations: Citation[],
   documents: UploadedDocument[],
 ): ConfidenceProfile {
-  const coveredDocuments = new Set(evidence.map((item) => item.documentId)).size;
+  const facts = bundle.groundedFacts ?? [];
+  const citedFacts = facts.filter((fact) =>
+    citations.some((citation) => citation.evidenceId === fact.evidenceId),
+  );
+  const coveredDocuments = new Set(citedFacts.map((fact) => fact.documentId)).size;
   const coverage = documents.length === 0
     ? 0
     : Math.round((coveredDocuments / documents.length) * 100);
-  const facts = bundle.groundedFacts ?? [];
-  const citedFactCount = facts.filter((fact) =>
-    citations.some((citation) => citation.evidenceId === fact.evidenceId),
-  ).length;
-  const citationStrength = facts.length > 0
-    ? Math.round((citedFactCount / facts.length) * 100)
-    : 0;
-  const representedCategories = new Set(facts.map((fact) => fact.category)).size;
-  const reasoning = facts.length === 0
-    ? 0
-    : Math.min(96, 34 + facts.length * 4 + representedCategories * 5);
-  const agreements = bundle.debateConsensus.agreements.length;
-  const disagreements = bundle.debateConsensus.disagreements.length;
-  const agreement = Math.round((agreements / Math.max(1, agreements + disagreements)) * 100);
   const missingCount = bundle.debateConsensus.missingEvidence.length;
+  const disagreements = bundle.debateConsensus.disagreements.length;
+  const assessment = assessEvidenceConfidence({
+    facts,
+    evidence,
+    counterEvidenceCount: disagreements,
+    missingEvidenceCount: missingCount,
+  });
+  const citedAssessment = assessEvidenceConfidence({
+    facts: citedFacts,
+    evidence,
+    counterEvidenceCount: disagreements,
+    missingEvidenceCount: missingCount,
+  });
+  const citedFactCount = citedAssessment.supportCount;
+  const citationStrength = assessment.supportCount > 0
+    ? Math.round(
+        (citedFactCount / assessment.supportCount) * 45 +
+        citedAssessment.strengthScore * 0.4 +
+        citedAssessment.sourceDiversityScore * 0.15,
+      )
+    : 0;
+  const agreements = bundle.debateConsensus.agreements.length;
+  const agreement = Math.round((agreements / Math.max(1, agreements + disagreements)) * 100);
   const contradictionCount = disagreements;
   const missingScore = Math.max(0, 100 - missingCount * 16);
   const contradictionScore = Math.max(0, 100 - contradictionCount * 20);
   const overall = Math.round(
-    coverage * 0.22 +
-      citationStrength * 0.27 +
-      agreement * 0.14 +
-      reasoning * 0.19 +
+    coverage * 0.14 +
+      citationStrength * 0.24 +
+      agreement * 0.16 +
+      assessment.score * 0.28 +
       missingScore * 0.09 +
       contradictionScore * 0.09,
   );
@@ -107,7 +121,7 @@ export function createConfidenceProfile(
         id: "citation-strength",
         label: "Citation Strength",
         score: citationStrength,
-        detail: `${citedFactCount} of ${facts.length} concrete findings link to exact source passages.`,
+        detail: `${citedFactCount} of ${assessment.supportCount} concrete findings link to exact source passages; directness and source independence are also weighted.`,
       },
       {
         id: "agent-agreement",
@@ -118,8 +132,8 @@ export function createConfidenceProfile(
       {
         id: "reasoning-confidence",
         label: "Reasoning Confidence",
-        score: reasoning,
-        detail: `${facts.length} concrete findings span ${representedCategories} evidence categor${representedCategories === 1 ? "y" : "ies"}.`,
+        score: assessment.score,
+        detail: `${assessment.supportCount} distinct supporting findings across ${assessment.sourceCount} source${assessment.sourceCount === 1 ? "" : "s"} were assessed for strength and consistency.`,
       },
       {
         id: "missing-evidence",
@@ -139,13 +153,17 @@ export function createConfidenceProfile(
   };
 }
 
-function createConsensusClaims(bundle: AnalysisBundle, citations: Citation[]): ConsensusClaim[] {
+function createConsensusClaims(
+  bundle: AnalysisBundle,
+  citations: Citation[],
+  confidence: ConfidenceProfile,
+): ConsensusClaim[] {
   const specialistOutputs = getSpecialistOutputEntries(bundle);
   const citationIds = citations.slice(0, 4).map((citation) => citation.id);
   const claims: ConsensusClaim[] = bundle.debateConsensus.agreements.map((claim, index) => ({
     id: `consensus:agreement:${index}`,
     claim,
-    confidence: Math.min(94, 64 + specialistOutputs.length * 6),
+    confidence: Math.min(94, Math.max(35, confidence.overall + 5)),
     uncertaintyReasons: bundle.debateConsensus.missingEvidence.slice(0, 2),
     citationIds,
     positions: specialistOutputs.map(([agentId, output]) =>
@@ -166,7 +184,7 @@ function createConsensusClaims(bundle: AnalysisBundle, citations: Citation[]): C
     claims.push({
       id: `consensus:disagreement:${index}`,
       claim,
-      confidence: 52,
+      confidence: Math.min(78, Math.max(28, confidence.overall - 14)),
       uncertaintyReasons: bundle.debateConsensus.missingEvidence,
       citationIds,
       positions,
@@ -177,7 +195,7 @@ function createConsensusClaims(bundle: AnalysisBundle, citations: Citation[]): C
     claims.push({
       id: "consensus:insufficient",
       claim: bundle.debateConsensus.finalConsensus,
-      confidence: 42,
+      confidence: Math.min(45, confidence.overall),
       uncertaintyReasons: bundle.debateConsensus.missingEvidence,
       citationIds,
       positions: specialistOutputs.map(([agentId, output]) =>

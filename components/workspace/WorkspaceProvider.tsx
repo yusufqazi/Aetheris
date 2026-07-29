@@ -70,10 +70,18 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(workspaceReducer, initialState);
   const stateRef = useRef(state);
   const pollingSessionsRef = useRef(new Set<string>());
+  const providerMountedRef = useRef(true);
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    providerMountedRef.current = true;
+    return () => {
+      providerMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (authLoading) return;
@@ -161,27 +169,46 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     let transientFailures = 0;
 
     try {
-      while (true) {
-        const response = await fetch(
-          `/api/analyze/${encodeURIComponent(activeSession.id)}?after=${sequence}`,
-          {
-            cache: "no-store",
-            headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
-          },
-        );
+      while (providerMountedRef.current && isActiveResearchSession(activeSession)) {
+        await waitForPollingWindow(transientFailures);
+        if (!providerMountedRef.current) return;
+
+        let response: Response;
+        try {
+          response = await fetch(
+            `/api/analyze/${encodeURIComponent(activeSession.id)}?after=${sequence}`,
+            {
+              cache: "no-store",
+              headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+            },
+          );
+        } catch (error) {
+          transientFailures += 1;
+          logMonitoringRetry(activeSession.id, transientFailures, error);
+          continue;
+        }
 
         if (!response.ok) {
           transientFailures += 1;
-          if (transientFailures >= 4) {
-            const payload = (await response.json().catch(() => null)) as { error?: string } | null;
-            throw new Error(payload?.error ?? "The research job could not be reached.");
-          }
-          await pollingDelay(900 * transientFailures);
+          const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+          logMonitoringRetry(
+            activeSession.id,
+            transientFailures,
+            new Error(payload?.error ?? `Research polling returned ${response.status}.`),
+          );
+          continue;
+        }
+
+        let payload: ResearchJobPollResponse;
+        try {
+          payload = await response.json() as ResearchJobPollResponse;
+        } catch (error) {
+          transientFailures += 1;
+          logMonitoringRetry(activeSession.id, transientFailures, error);
           continue;
         }
 
         transientFailures = 0;
-        const payload = await response.json() as ResearchJobPollResponse;
         const remoteSession = normalizeResearchSession(payload.session);
         if (remoteSession) {
           activeSession = remoteSession;
@@ -209,12 +236,20 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const startAnalysis = useCallback(
     async (session: ResearchSession, options?: { retry?: boolean }) => {
       let activeSession = options?.retry ? prepareForRetry(session) : session;
+      if (activeSession.status === "idle") {
+        activeSession = {
+          ...activeSession,
+          status: "processing",
+          updatedAt: new Date().toISOString(),
+        };
+      }
       commitSession(activeSession);
       setActiveSessionId(activeSession.id);
       selectInspector({ tab: "confidence", sessionId: activeSession.id });
       startTransition(() => router.push(`/research/${activeSession.id}`));
 
       const startingSequence = Math.max(0, ...activeSession.events.map((event) => event.sequence));
+      let jobAccepted = false;
 
       try {
         const response = await fetch("/api/analyze", {
@@ -244,8 +279,19 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
           activeSession = { ...activeSession, mode: job.mode };
           commitSession(activeSession);
         }
+        jobAccepted = true;
         await pollResearchJob(activeSession);
       } catch (error) {
+        if (jobAccepted) {
+          console.warn("[Aetheris research monitor] Monitoring paused; reconnect will continue", {
+            sessionId: activeSession.id,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
+        // A rejected start request is different from a later monitoring disconnect.
+        // pollResearchJob handles transient monitoring failures internally and never
+        // turns them into pipeline failures.
         const current =
           stateRef.current.sessions.find((item) => item.id === activeSession.id) ?? activeSession;
         const createEvent = createEventFactory(
@@ -255,14 +301,14 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         const failure = createEvent({
           type: "session.failed",
           phase: "error",
-          message: "The research job could not be monitored to completion",
+          message: "The research job could not be started",
           data: {
             error: {
-              code: "RESEARCH_STREAM_FAILED",
-              title: "Research monitoring interrupted",
-              message: "The server-owned research job may still be running. Your prepared documents and completed work are preserved.",
+              code: "RESEARCH_START_FAILED",
+              title: "Research analysis could not start",
+              message: "Aetheris could not start the server-side research job. Your prepared documents are preserved.",
               retryable: true,
-              details: error instanceof Error ? error.message : "Unknown stream error",
+              details: error instanceof Error ? error.message : "Unknown startup error",
             },
           },
         });
@@ -275,10 +321,27 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!state.hydrated) return;
     for (const session of state.sessions) {
-      if (["completed", "error"].includes(session.status)) continue;
+      if (!isActiveResearchSession(session)) continue;
       void pollResearchJob(session).catch(() => null);
     }
   }, [pollResearchJob, state.hydrated, state.sessions]);
+
+  useEffect(() => {
+    if (!state.hydrated) return;
+    const reconnect = () => {
+      for (const session of stateRef.current.sessions) {
+        if (isActiveResearchSession(session)) {
+          void pollResearchJob(session).catch(() => null);
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", reconnect);
+    window.addEventListener("online", reconnect);
+    return () => {
+      document.removeEventListener("visibilitychange", reconnect);
+      window.removeEventListener("online", reconnect);
+    };
+  }, [pollResearchJob, state.hydrated]);
 
   const openDemoSession = useCallback(async () => {
     const session = makeDemoSession();
@@ -320,6 +383,42 @@ interface ResearchJobPollResponse {
 
 function pollingDelay(milliseconds: number) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function waitForPollingWindow(transientFailures: number) {
+  if (document.visibilityState === "hidden") {
+    return new Promise<void>((resolve) => {
+      const resume = () => {
+        if (document.visibilityState !== "hidden") {
+          document.removeEventListener("visibilitychange", resume);
+          resolve();
+        }
+      };
+      document.addEventListener("visibilitychange", resume);
+    });
+  }
+
+  if (!navigator.onLine) {
+    return new Promise<void>((resolve) => {
+      window.addEventListener("online", () => resolve(), { once: true });
+    });
+  }
+
+  if (transientFailures === 0) return Promise.resolve();
+  return pollingDelay(Math.min(10_000, 700 * 2 ** Math.min(transientFailures, 4)));
+}
+
+function isActiveResearchSession(session: ResearchSession) {
+  return !["idle", "completed", "error"].includes(session.status);
+}
+
+function logMonitoringRetry(sessionId: string, attempt: number, error: unknown) {
+  if (attempt !== 1 && attempt % 5 !== 0) return;
+  console.warn("[Aetheris research monitor] Reconnecting to server-owned job", {
+    sessionId,
+    attempt,
+    message: error instanceof Error ? error.message : String(error),
+  });
 }
 
 export function useWorkspace() {

@@ -2,6 +2,7 @@ import {
   findExactEvidenceSpan,
   pageTextFor,
 } from "@/lib/research/evidence-spans";
+import { areDuplicateSupportingPassages } from "@/lib/research/finding-deduplication";
 import type {
   Citation,
   EvidenceRelationship,
@@ -53,7 +54,6 @@ export function buildEvidenceRelationships({
   aiMappings?: ResearchEvidenceMapping[];
 }) {
   const relationships: EvidenceRelationship[] = [];
-  const seenQuotes = new Set<string>();
 
   for (const citation of citations) {
     const pageText = pageTextFor(documents, citation.documentId, citation.page);
@@ -74,10 +74,6 @@ export function buildEvidenceRelationships({
     const compatibility = evidenceCompatibility(targetText, span.quote, fact, targetKind);
     if (!aiMapping && !compatibility.relevant) continue;
 
-    const quoteKey = normalizeSemanticText(span.quote);
-    if (!quoteKey || seenQuotes.has(quoteKey)) continue;
-    seenQuotes.add(quoteKey);
-
     const relationshipType = aiMapping?.relationshipType
       ?? relationshipTypeFor(fact, targetKind, span.quote);
     relationships.push({
@@ -97,7 +93,35 @@ export function buildEvidenceRelationships({
     });
   }
 
-  return relationships;
+  return rankEvidenceRelationships(targetText, relationships);
+}
+
+export function rankEvidenceRelationships(
+  targetText: string,
+  relationships: EvidenceRelationship[],
+) {
+  const ranked = [...relationships].sort((left, right) =>
+    evidenceDirectnessScore(targetText, right) - evidenceDirectnessScore(targetText, left) ||
+    left.documentName.localeCompare(right.documentName) ||
+    (left.page ?? 0) - (right.page ?? 0) ||
+    left.citationId.localeCompare(right.citationId),
+  );
+  const accepted: EvidenceRelationship[] = [];
+
+  for (const relationship of ranked) {
+    const duplicate = accepted.some((candidate) => {
+      const sameSourcePage = candidate.documentId === relationship.documentId &&
+        candidate.page === relationship.page;
+      return areDuplicateSupportingPassages(
+        candidate.exactQuote,
+        relationship.exactQuote,
+        sameSourcePage,
+      );
+    });
+    if (!duplicate) accepted.push(relationship);
+  }
+
+  return accepted;
 }
 
 export function isQuestionOnlyQuote(text: string) {
@@ -180,6 +204,49 @@ function relevanceExplanationFor(
 
 function isVagueRelevanceExplanation(value: string) {
   return /supports? (?:the )?(?:reported|selected|overall) (?:assessment|finding|conclusion)|directly relevant (?:source )?evidence|relevant to the (?:analysis|question)/i.test(value);
+}
+
+function evidenceDirectnessScore(
+  targetText: string,
+  relationship: EvidenceRelationship,
+) {
+  const targetTokens = significantTokens(targetText);
+  const quoteTokens = significantTokens(relationship.exactQuote);
+  const quoteTokenSet = new Set(quoteTokens);
+  const shared = targetTokens.filter((token) => quoteTokenSet.has(token));
+  const coverage = shared.length / Math.max(1, targetTokens.length);
+  const precision = shared.length / Math.max(1, quoteTokens.length);
+  const targetNumbers: string[] = targetText.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+  const quoteNumbers: string[] = relationship.exactQuote.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+  const numericCoverage = targetNumbers.length === 0
+    ? 0
+    : targetNumbers.filter((value) => quoteNumbers.includes(value)).length / targetNumbers.length;
+  const relationshipWeight = {
+    supports: 8,
+    provides_context: 2,
+    proposes_follow_up: 0,
+    weakens: -2,
+    contradicts: -3,
+    identifies_missing_evidence: -4,
+  }[relationship.relationshipType] ?? 0;
+  const equivalent = areSemanticallyEquivalent(targetText, relationship.exactQuote) ? 12 : 0;
+  const confidence = relationship.confidence === "high" ? 2 : relationship.confidence === "medium" ? 1 : 0;
+  const targetIsDefinitive = /\b(?:confirm|demonstrat|establish|leading|primary|most likely|recommend|should)\w*\b/i.test(targetText);
+  const quoteIsHedged = /\b(?:may|might|possible|potential|suspected|considered|uncertain|unclear)\b/i.test(relationship.exactQuote);
+  const hedgePenalty = targetIsDefinitive && quoteIsHedged ? 4 : 0;
+  const directPredicate = /\b(?:confirm|demonstrat|diagnos|establish|identify|indicat|recommend|show|support)\w*\b/i.test(relationship.exactQuote)
+    ? 2
+    : 0;
+
+  return coverage * 20 +
+    precision * 6 +
+    shared.length * 2 +
+    numericCoverage * 8 +
+    relationshipWeight +
+    equivalent +
+    confidence +
+    directPredicate -
+    hedgePenalty;
 }
 
 function findValidatedAiMapping({

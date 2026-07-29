@@ -49,6 +49,114 @@ describe("research intelligence grounding", () => {
       "direct-answer-contains-unsupported-number",
     );
   });
+
+  it("drops model-generated conflicts between unrelated recommendations", () => {
+    const secondEvidence: EvidenceItem = {
+      ...evidence[0],
+      id: "evidence:renal",
+      chunkId: "renal",
+      documentId: "doc-2",
+      documentName: "renal.pdf",
+      excerpt: "Renal biopsy should be deferred until the platelet count recovers.",
+    };
+    const intelligence = makeIntelligence();
+    intelligence.contradictions = [{
+      issue: "Different recommendations were documented.",
+      sourcePositions: [
+        "Continue ECG monitoring after the QTc improvement.",
+        "Renal biopsy should be deferred until the platelet count recovers.",
+      ],
+      reconciliation: "The recommendations address different decisions.",
+      impact: "They should not be treated as competing management choices.",
+      evidenceIds: ["evidence:valid", "evidence:renal"],
+    }];
+
+    const sanitized = sanitizeResearchIntelligence(intelligence, [...evidence, secondEvidence]);
+
+    expect(sanitized?.contradictions).toEqual([]);
+  });
+
+  it("drops compatible recommendations and different noncompeting outcomes", () => {
+    const additionalEvidence: EvidenceItem[] = [
+      {
+        ...evidence[0],
+        id: "evidence:ceftriaxone",
+        chunkId: "ceftriaxone",
+        documentId: "doc-2",
+        documentName: "infectious-disease.pdf",
+        excerpt: "Continue ceftriaxone while blood cultures are pending.",
+      },
+      {
+        ...evidence[0],
+        id: "evidence:activity",
+        chunkId: "activity",
+        documentId: "doc-3",
+        documentName: "activity.pdf",
+        excerpt: "AX-217 improved disease activity compared with baseline.",
+      },
+      {
+        ...evidence[0],
+        id: "evidence:sleep",
+        chunkId: "sleep",
+        documentId: "doc-4",
+        documentName: "sleep.pdf",
+        excerpt: "AX-217 did not improve sleep quality during follow-up.",
+      },
+    ];
+    const intelligence = makeIntelligence();
+    intelligence.contradictions = [{
+      issue: "The antibiotic recommendations differ.",
+      sourcePositions: [
+        "Start ceftriaxone now for the suspected infection.",
+        "Continue ceftriaxone while blood cultures are pending.",
+      ],
+      reconciliation: "Both recommendations belong to the same treatment plan.",
+      impact: "No management disagreement exists.",
+      evidenceIds: ["evidence:valid", "evidence:ceftriaxone"],
+    }, {
+      issue: "The AX-217 outcomes differ.",
+      sourcePositions: [
+        "AX-217 improved disease activity compared with baseline.",
+        "AX-217 did not improve sleep quality during follow-up.",
+      ],
+      reconciliation: "The passages report different endpoints.",
+      impact: "One endpoint does not negate the other.",
+      evidenceIds: ["evidence:activity", "evidence:sleep"],
+    }];
+
+    const sanitized = sanitizeResearchIntelligence(
+      intelligence,
+      [...evidence, ...additionalEvidence],
+    );
+
+    expect(sanitized?.contradictions).toEqual([]);
+  });
+
+  it("keeps a genuine same-treatment recommendation disagreement", () => {
+    const secondEvidence: EvidenceItem = {
+      ...evidence[0],
+      id: "evidence:delay",
+      chunkId: "delay",
+      documentId: "doc-2",
+      documentName: "safety.pdf",
+      excerpt: "Delay NX-410 until liver enzymes normalize.",
+    };
+    const intelligence = makeIntelligence();
+    intelligence.contradictions = [{
+      issue: "The sources disagree about whether NX-410 should begin now.",
+      sourcePositions: [
+        "Start NX-410 now.",
+        "Delay NX-410 until liver enzymes normalize.",
+      ],
+      reconciliation: "The safety threshold must be resolved before treatment timing is settled.",
+      impact: "The disagreement changes the immediate treatment decision.",
+      evidenceIds: ["evidence:valid", "evidence:delay"],
+    }];
+
+    const sanitized = sanitizeResearchIntelligence(intelligence, [...evidence, secondEvidence]);
+
+    expect(sanitized?.contradictions).toHaveLength(1);
+  });
 });
 
 function makeIntelligence(): ResearchIntelligence {

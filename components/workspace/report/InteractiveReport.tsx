@@ -13,12 +13,14 @@ import { useEffect, useState } from "react";
 
 import { CitationLinks, documentTitle } from "@/components/workspace/report/CitationLinks";
 import { InvestigationSummary } from "@/components/workspace/report/InvestigationSummary";
+import { ResearchQuestionSummary } from "@/components/workspace/ResearchQuestionSummary";
 import { getSessionCitations, selectNarrowEvidenceQuote } from "@/lib/research/evidence-spans";
 import {
   areSemanticallyEquivalent,
   semanticTopics,
 } from "@/lib/research/evidence-relationships";
 import { buildInvestigationData } from "@/lib/research/investigation";
+import { createClinicalFindingTitle } from "@/lib/research/finding-titles";
 import type { AgentId, Citation, ResearchSession } from "@/lib/types";
 
 const PROCESS_LABELS: Record<AgentId, string> = {
@@ -129,10 +131,7 @@ export function InteractiveReport({ session }: { session: ResearchSession }) {
 
         <div className="mt-5 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="min-w-0">
-            <p className="font-mono text-[8px] uppercase tracking-[0.22em] text-sky-400">Research question</p>
-            <h1 className="mt-2 max-w-4xl text-[clamp(1.4rem,2.7vw,2.35rem)] font-medium leading-[1.16] tracking-[-0.04em] text-white">
-              {session.question}
-            </h1>
+            <ResearchQuestionSummary question={session.question} />
             <p className="mt-3 text-[11px] text-slate-500">
               {session.documents.length} source{session.documents.length === 1 ? "" : "s"} · {session.metrics.pageCount} pages · {session.metrics.retrievedEvidenceCount} ranked passages
             </p>
@@ -260,11 +259,12 @@ export function selectStrongestEvidenceItems(
   const candidates = investigation.findings.flatMap((finding) => finding.citationIds.map((id) => {
       const citation = citations.find((item) => item.id === id);
       if (!citation) return null;
+      const evidenceQuery = finding.evidenceQuery ?? finding.statement;
       const quote = citation.exactQuote ?? selectNarrowEvidenceQuote(citation.excerpt) ?? citation.excerpt;
       const relationships = finding.relationships.filter((relationship) => relationship.citationId === citation.id);
       const hasSupportRelationship = relationships.some((relationship) => relationship.relationshipType === "supports");
       const legacyCompatibleSupport = investigation.findings.every((item) => item.relationships.length === 0) &&
-        evidenceGenerallySupportsFinding(finding.statement, quote);
+        evidenceGenerallySupportsFinding(evidenceQuery, quote);
       if (
         quote.length < 20 ||
         /\?$/.test(quote.trim()) ||
@@ -275,7 +275,11 @@ export function selectStrongestEvidenceItems(
         citation,
         quote,
         supports: finding.statement,
-        title: evidenceTitle(finding.theme),
+        title: createClinicalFindingTitle({
+          statement: evidenceQuery,
+          providedTitle: finding.theme,
+          dimension: finding.dimension,
+        }),
         dimension: finding.dimension,
         theme: finding.theme,
         priorityScore: finding.priorityScore,
@@ -283,7 +287,7 @@ export function selectStrongestEvidenceItems(
         evidenceScore: finding.priorityScore
           + Number(finding.priority === "Primary finding") * 3
           + Number(relationships.some((relationship) => relationship.confidence === "high") || legacyCompatibleSupport) * 2
-          + questionRelevanceScore(question, quote, finding.statement)
+          + questionRelevanceScore(question, quote, evidenceQuery)
           + Number(/\b\d+(?:\.\d+)?\s*(?:%|mg|g\/dL|ng\/mL|ms|weeks?|months?)\b|\bp\s*[=<]/i.test(quote)) * 2
           + Number(/\b(?:follow-up|after|versus|compared|remained|persisted)\b|\bfrom\b.{1,40}\bto\b/i.test(quote)) * 3
           - Number(/^(?:baseline|initial)\b/i.test(quote)) * 2,
@@ -345,10 +349,6 @@ function questionRelevanceScore(question: string, quote: string, finding: string
   const evidenceText = `${quote} ${finding}`.toLowerCase();
   const matches = questionTokens.filter((token) => evidenceText.includes(token)).length;
   return Math.min(4, matches);
-}
-
-function evidenceTitle(theme: string) {
-  return theme.trim() || "Source-supported observation";
 }
 
 function evidenceGenerallySupportsFinding(finding: string, quote: string) {

@@ -52,7 +52,7 @@ export async function runAdverseReactionAgent({
         safetyFacts.length > 0
           ? safetyFacts.map((fact) => fact.text).join(" ")
           : "No explicit adverse-event finding was present in the retrieved passages.",
-      confidence: confidenceFromEvidence(safetyFacts.length, sourceChunks.length),
+      confidence: confidenceFromEvidence(safetyFacts, sourceChunks),
       limitations: [
         "Event frequencies may be absent or partial when source tables are not fully captured in extracted text.",
       ],
@@ -63,7 +63,7 @@ export async function runAdverseReactionAgent({
         frequency: fact.text.match(/\d+(?:\.\d+)?\s*%/g)?.join(", ") ?? "Frequency not stated in this excerpt",
         affectedPopulation: "Reported study population",
         sourceEvidence: fact.excerpt,
-        confidenceLevel: confidenceFromEvidence(1, sourceChunks.length),
+        confidenceLevel: confidenceFromEvidence([fact], sourceChunks),
       })).slice(0, 6),
     }),
   });

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isClinicallyImportantUncertainty,
   isGenericOpenQuestion,
+  isOpenQuestionAnswered,
   openQuestionFromGap,
 } from "@/lib/research/open-questions";
+import type { GroundedFact, ResearchContentType } from "@/lib/types";
 
 describe("evidence-specific open questions", () => {
   it.each([
@@ -23,4 +26,39 @@ describe("evidence-specific open questions", () => {
     expect(isGenericOpenQuestion("What additional evidence would reduce uncertainty?")).toBe(true);
     expect(isGenericOpenQuestion("What does the pending pathology result show?")).toBe(false);
   });
+
+  it("recognizes when a finalized source result answers an older open question", () => {
+    expect(isOpenQuestionAnswered(
+      "What do the pending blood cultures show?",
+      [fact("finding", "Final blood cultures grew Escherichia coli.")],
+    )).toBe(true);
+  });
+
+  it("does not treat a conditional recommendation as the missing test result", () => {
+    expect(isOpenQuestionAnswered(
+      "What is the documented result for kidney biopsy?",
+      [fact("recommendation", "Long-term therapy should be deferred until kidney biopsy is completed.")],
+    )).toBe(false);
+  });
+
+  it("recognizes clinically important uncertainty outside formal limitation records", () => {
+    expect(isClinicallyImportantUncertainty(
+      "Possible urinary obstruction has not been excluded and may require source-control intervention.",
+    )).toBe(true);
+  });
 });
+
+function fact(contentType: ResearchContentType, text: string): GroundedFact {
+  return {
+    id: `fact:${contentType}`,
+    category: contentType === "recommendation" ? "context" : "efficacy",
+    contentType,
+    text,
+    evidenceId: `evidence:${contentType}`,
+    documentId: `document:${contentType}`,
+    documentName: `${contentType}.pdf`,
+    page: 1,
+    excerpt: text,
+    relevance: "Test evidence.",
+  };
+}

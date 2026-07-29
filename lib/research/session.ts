@@ -354,7 +354,8 @@ export function normalizeResearchSession(value: unknown): ResearchSession | null
   const selectedAgents = (raw.selectedAgents ?? [...AGENT_IDS]).filter((agent): agent is AgentId =>
     AGENT_IDS.includes(agent as AgentId),
   );
-  const mappedStatus = mapLegacyStatus(raw.status);
+  const recoverMonitoringInterruption = isMonitoringInterruption(raw.error);
+  const mappedStatus = mapLegacyStatus(raw.status, recoverMonitoringInterruption);
   const base = createResearchSession({
     id: raw.id,
     question: raw.question,
@@ -387,7 +388,9 @@ export function normalizeResearchSession(value: unknown): ResearchSession | null
     reportSections: raw.reportSections ?? raw.results?.reportGeneration.sections ?? [],
     metrics: { ...metricsFromDocuments(documents), ...raw.metrics },
     confidence: raw.confidence ?? raw.results?.confidence,
-    error: normalizeInterruptedError(mappedStatus, raw.error),
+    error: recoverMonitoringInterruption
+      ? null
+      : normalizeSessionError(mappedStatus, raw.error),
   };
 }
 
@@ -470,21 +473,15 @@ function inferExecutions(
   return executions;
 }
 
-function mapLegacyStatus(status: ResearchSession["status"] | "draft" | "processing" | undefined) {
+function mapLegacyStatus(
+  status: ResearchSession["status"] | "draft" | "processing" | undefined,
+  recoverMonitoringInterruption = false,
+) {
   if (status === "draft") {
     return "idle" as const;
   }
 
-  if (
-    status === "processing" ||
-    status === "uploading" ||
-    status === "retrieving" ||
-    status === "analyzing" ||
-    status === "consensus" ||
-    status === "generating-report"
-  ) {
-    return "error" as const;
-  }
+  if (status === "error" && recoverMonitoringInterruption) return "processing" as const;
 
   return status ?? "idle";
 }
@@ -510,7 +507,7 @@ function compactResearchEvent(event: ResearchEvent): ResearchEvent {
   return event;
 }
 
-function normalizeInterruptedError(
+function normalizeSessionError(
   status: ResearchSession["status"],
   error: ResearchSession["error"],
 ) {
@@ -523,10 +520,15 @@ function normalizeInterruptedError(
   }
 
   return {
-    code: "SESSION_INTERRUPTED",
-    title: "Research session interrupted",
-    message: "The live connection ended before the research run completed. Your uploaded sources are preserved.",
+    code: "LEGACY_PIPELINE_FAILED",
+    title: "Research analysis did not complete",
+    message: "The research pipeline ended before a final report was produced. Your uploaded sources are preserved.",
     retryable: true,
-    details: "Restart from retrieval to continue with the preserved document set.",
+    details: "Retry from retrieval to continue with the preserved document set.",
   };
+}
+
+function isMonitoringInterruption(error: ResearchSession["error"]) {
+  return error?.code === "SESSION_INTERRUPTED" ||
+    error?.code === "RESEARCH_STREAM_FAILED";
 }

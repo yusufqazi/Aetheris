@@ -54,7 +54,7 @@ describe("research session state", () => {
     expect(stale).toBe(finished);
   });
 
-  it("normalizes interrupted legacy sessions without inventing unavailable metrics", () => {
+  it("preserves active server-owned sessions during hydration", () => {
     const legacy = normalizeResearchSession({
       id: "legacy-session",
       question: "Legacy objective",
@@ -76,14 +76,36 @@ describe("research session state", () => {
     });
 
     expect(legacy).not.toBeNull();
-    expect(legacy?.status).toBe("error");
-    expect(legacy?.error).toMatchObject({ code: "SESSION_INTERRUPTED", retryable: true });
+    expect(legacy?.status).toBe("processing");
+    expect(legacy?.error).toBeNull();
     expect(legacy?.documents[0].pages[0]).toMatchObject({
       number: 1,
       text: "Preserved source text",
     });
     expect(legacy?.metrics.chunkCount).toBe(0);
     expect(legacy?.metrics.retrievalMethod).toBeNull();
+  });
+
+  it("recovers legacy client-monitoring errors without restarting the pipeline", () => {
+    const interrupted = normalizeResearchSession({
+      id: "monitoring-interruption",
+      question: "Recover the server-owned analysis",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      status: "error",
+      mode: "live",
+      documents: makeDemoDocuments(),
+      selectedAgents: [...AGENT_IDS],
+      error: {
+        code: "RESEARCH_STREAM_FAILED",
+        title: "Research monitoring interrupted",
+        message: "The browser stopped monitoring the job.",
+        retryable: true,
+      },
+    });
+
+    expect(interrupted?.status).toBe("processing");
+    expect(interrupted?.error).toBeNull();
+    expect(interrupted?.documents).toHaveLength(makeDemoDocuments().length);
   });
 
   it("deletes a saved analysis without affecting other sessions", async () => {

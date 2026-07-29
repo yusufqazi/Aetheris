@@ -10,11 +10,16 @@ import { runDrugInteractionAgent } from "@/lib/agents/drugInteractionAgent";
 import { runLiteratureSearchAgent } from "@/lib/agents/literatureSearchAgent";
 import { runReportAgent } from "@/lib/agents/reportAgent";
 import { runTrialSummarizerAgent } from "@/lib/agents/trialSummarizerAgent";
-import type { FallbackObserver } from "@/lib/agents/shared";
+import {
+  confidenceFromEvidence,
+  type FallbackObserver,
+} from "@/lib/agents/shared";
+import { assessEvidenceConfidence } from "@/lib/research/confidence";
 import { getLlmConfiguration } from "@/lib/llm";
 import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
 import { assembleResearchArtifacts } from "@/lib/research/artifacts";
 import { extractGroundedFacts } from "@/lib/research/grounding";
+import { cleanSearchChunks } from "@/lib/research/source-cleaning";
 import type { ResearchEventInput } from "@/lib/research/events";
 import {
   SPECIALIST_AGENT_IDS,
@@ -25,6 +30,7 @@ import {
   type DebateConsensusOutput,
   type DrugInteractionAgentOutput,
   type EvidenceItem,
+  type GroundedFact,
   type LiteratureSearchAgentOutput,
   type ReportOutput,
   type ResearchMetrics,
@@ -104,7 +110,8 @@ export async function runResearchPipeline({
     data: { progress: 10, detail: "Preserving page and context offsets" },
   });
 
-  const chunks = session.documents.flatMap((document) => chunkDocument(document));
+  const rawChunks = session.documents.flatMap((document) => chunkDocument(document));
+  const chunks = cleanSearchChunks(rawChunks);
   await emit({
     type: "stage.completed",
     phase: "processing",
@@ -277,8 +284,16 @@ export async function runResearchPipeline({
           await delay(DEMO_COMPLETION_DELAY[agentId]);
         }
 
+        const specialistFacts = extractGroundedFacts(
+          chunksToEvidence(rankedChunks, `Confidence evidence for ${agentLabel(agentId)}`),
+          session.question,
+        );
         const anchoredOutput = {
           ...output,
+          confidence: confidenceFromEvidence(
+            factsForSpecialistConfidence(agentId, specialistFacts),
+            rankedChunks,
+          ),
           evidence: chunksToEvidence(rankedChunks.slice(0, 4), `Reviewed by ${agentLabel(agentId)}`),
         } as AgentOutput;
         specialistOutputs[agentId] = anchoredOutput;
@@ -357,7 +372,16 @@ export async function runResearchPipeline({
       onFallback,
     });
     await announceFallbackIfNeeded();
-    debate = { ...debate, evidence: evidence.slice(0, 4) };
+    debate = {
+      ...debate,
+      confidence: assessEvidenceConfidence({
+        facts: groundedFacts,
+        evidence,
+        counterEvidenceCount: debate.disagreements.length,
+        missingEvidenceCount: debate.missingEvidence.length,
+      }).level,
+      evidence: evidence.slice(0, 4),
+    };
     if (!llmConfiguration.enabled) {
       await delay(420);
     }
@@ -377,6 +401,15 @@ export async function runResearchPipeline({
     });
   } else {
     debate = fallbackDebate(session.question, literature, drug, adverse, trial);
+    debate = {
+      ...debate,
+      confidence: assessEvidenceConfidence({
+        facts: groundedFacts,
+        evidence,
+        counterEvidenceCount: debate.disagreements.length,
+        missingEvidenceCount: debate.missingEvidence.length,
+      }).level,
+    };
     await emitAgentSkipped(emit, "debate-consensus");
   }
 
@@ -406,13 +439,31 @@ export async function runResearchPipeline({
       onFallback,
     });
     await announceFallbackIfNeeded();
-    report = { ...report, evidence: evidence.slice(0, 4) };
+    report = {
+      ...report,
+      confidence: assessEvidenceConfidence({
+        facts: groundedFacts,
+        evidence,
+        counterEvidenceCount: debate.disagreements.length,
+        missingEvidenceCount: debate.missingEvidence.length,
+      }).level,
+      evidence: evidence.slice(0, 4),
+    };
     if (!llmConfiguration.enabled) {
       await delay(360);
     }
     completedAgentCount += 1;
   } else {
     report = fallbackReport(debate);
+    report = {
+      ...report,
+      confidence: assessEvidenceConfidence({
+        facts: groundedFacts,
+        evidence,
+        counterEvidenceCount: debate.disagreements.length,
+        missingEvidenceCount: debate.missingEvidence.length,
+      }).level,
+    };
     await emitAgentSkipped(emit, "report-generation");
   }
 
@@ -480,6 +531,29 @@ export async function runResearchPipeline({
   });
 
   return { results: artifacts.bundle, metrics, confidence: artifacts.confidence, mode: actualMode };
+}
+
+function factsForSpecialistConfidence(
+  agentId: (typeof SPECIALIST_AGENT_IDS)[number],
+  facts: GroundedFact[],
+) {
+  if (agentId === "drug-interaction") {
+    return facts.filter((fact) =>
+      fact.category === "interaction" || fact.contentType === "interaction_concern"
+    );
+  }
+  if (agentId === "adverse-reaction") {
+    return facts.filter((fact) =>
+      fact.category === "safety" || fact.contentType === "safety_observation"
+    );
+  }
+  if (agentId === "trial-summarizer") {
+    return facts.filter((fact) =>
+      ["efficacy", "exclusion", "statistical", "study-design"].includes(fact.category) ||
+      ["limitation", "longitudinal_change"].includes(fact.contentType)
+    );
+  }
+  return facts;
 }
 
 async function runSpecialist(

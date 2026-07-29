@@ -45,7 +45,7 @@ export async function runDrugInteractionAgent({
       summary: interactionFacts.length > 0
         ? interactionFacts.slice(0, 6).map((fact) => fact.text).join(" ")
         : "No explicit medication interaction was established in the retrieved passages.",
-      confidence: confidenceFromEvidence(interactionFacts.length, sourceChunks.length),
+      confidence: confidenceFromEvidence(interactionFacts, sourceChunks),
       limitations: [
         "This assistant cannot determine clinical significance without full labeling, mechanistic data, or expert review.",
       ],

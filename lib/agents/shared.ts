@@ -1,6 +1,7 @@
 import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
 import { chunksToEvidence } from "@/lib/embeddings";
 import { extractGroundedFacts } from "@/lib/research/grounding";
+import { assessEvidenceConfidence } from "@/lib/research/confidence";
 import type { EvidenceItem, GroundedFact, SearchChunk } from "@/lib/types";
 
 export type FallbackObserver = (reason: string) => void;
@@ -24,10 +25,16 @@ export function hasConcreteContent(value: unknown) {
   return /\d|%|\bp\s*[=<]|randomi[sz]ed|adverse|excluded|endpoint|follow-up|cyp|interaction|inhibitor|exposure/i.test(serialized);
 }
 
-export function confidenceFromEvidence(factCount: number, evidenceCount: number) {
-  if (factCount >= 4 && evidenceCount >= 2) return "high" as const;
-  if (factCount >= 1 && evidenceCount >= 1) return "medium" as const;
-  return "low" as const;
+export function confidenceFromEvidence(
+  facts: GroundedFact[],
+  evidence: SearchChunk[] | EvidenceItem[],
+  counterEvidenceCount = 0,
+) {
+  return assessEvidenceConfidence({
+    facts,
+    evidence,
+    counterEvidenceCount,
+  }).level;
 }
 
 export function pickSentences(text: string, count = 2) {

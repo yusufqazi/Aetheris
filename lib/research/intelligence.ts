@@ -1,10 +1,18 @@
 import type { EvidenceItem, ResearchIntelligence, StructuredResearchClaim } from "@/lib/types";
 import {
-  areSemanticallyEquivalent,
   isQuestionOnlyQuote,
   semanticTopics,
 } from "@/lib/research/evidence-relationships";
+import { areOverlappingClinicalConclusions } from "@/lib/research/finding-deduplication";
+import { assessEvidenceConfidence } from "@/lib/research/confidence";
 import { isGenericOpenQuestion } from "@/lib/research/open-questions";
+import {
+  sameClinicalQuestion,
+  sameManagementTarget,
+  sameOutcomeQuestion,
+} from "@/lib/research/conflict-semantics";
+import { polishPrimaryAnswerFluency } from "@/lib/research/primary-answer";
+import { createClinicalFindingTitle } from "@/lib/research/finding-titles";
 
 export function sanitizeResearchIntelligence(
   intelligence: ResearchIntelligence | undefined,
@@ -27,6 +35,7 @@ export function sanitizeResearchIntelligence(
     .map((item) => ({ ...item, evidenceIds: keepIds(item.evidenceIds) }))
     .filter((item) => item.evidenceIds.length >= 2 && item.sourcePositions.length >= 2)
     .filter((item) => !isUncertaintyOnlyContradiction(item))
+    .filter(isGenuineContradiction)
     .slice(0, 5);
   const evidenceMappings = (intelligence.evidenceMappings ?? [])
     .filter((mapping) => {
@@ -41,11 +50,15 @@ export function sanitizeResearchIntelligence(
       candidate.exactQuote === mapping.exactQuote,
     ) === index)
     .slice(0, 24);
-  const structuredClaims = (intelligence.structuredClaims ?? [])
+  const structuredClaims = mergeOverlappingClaims((intelligence.structuredClaims ?? [])
     .map((claim) => ({
       ...claim,
       conclusion: claim.conclusion.trim(),
-      theme: claim.theme?.trim(),
+      theme: createClinicalFindingTitle({
+        statement: claim.conclusion,
+        providedTitle: claim.theme,
+        dimension: claim.dimension,
+      }),
       clinicalImplication: claim.clinicalImplication?.trim(),
       reasoningSummary: claim.reasoningSummary.trim(),
       uncertainty: claim.uncertainty.trim(),
@@ -58,15 +71,16 @@ export function sanitizeResearchIntelligence(
       claim.evidenceIds.length > 0 &&
       isCompleteStatement(claim.conclusion) &&
       numbersAreGrounded(`${claim.conclusion} ${claim.reasoningSummary}`, claim.evidenceIds, evidence),
-    )
-    .filter((claim, index, claims) => claims.findIndex((candidate) =>
-      areSemanticallyEquivalent(candidate.conclusion, claim.conclusion),
-    ) === index)
+    ))
+    .map((claim) => ({
+      ...claim,
+      confidence: confidenceForStructuredClaim(claim, evidence),
+    }))
     .slice(0, 10);
 
   return {
     ...intelligence,
-    directAnswer: intelligence.directAnswer.trim(),
+    directAnswer: polishPrimaryAnswerFluency(intelligence.directAnswer),
     strongestSupportedConclusion: intelligence.strongestSupportedConclusion.trim(),
     strongestCounterpoint: intelligence.strongestCounterpoint.trim(),
     evidenceTrajectory,
@@ -89,6 +103,55 @@ export function sanitizeResearchIntelligence(
   } satisfies ResearchIntelligence;
 }
 
+function mergeOverlappingClaims(claims: StructuredResearchClaim[]) {
+  const merged: StructuredResearchClaim[] = [];
+  for (const claim of claims) {
+    const duplicate = merged.find((candidate) =>
+      areOverlappingClinicalConclusions(candidate.conclusion, claim.conclusion),
+    );
+    if (!duplicate) {
+      merged.push(claim);
+      continue;
+    }
+
+    duplicate.evidenceIds = Array.from(new Set([
+      ...duplicate.evidenceIds,
+      ...claim.evidenceIds,
+    ]));
+    duplicate.counterEvidenceIds = Array.from(new Set([
+      ...duplicate.counterEvidenceIds,
+      ...claim.counterEvidenceIds,
+    ])).filter((id) => !duplicate.evidenceIds.includes(id));
+  }
+  return merged;
+}
+
+function confidenceForStructuredClaim(
+  claim: StructuredResearchClaim,
+  evidence: EvidenceItem[],
+) {
+  const supportingEvidence = evidence.filter((item) =>
+    claim.evidenceIds.includes(item.id) || claim.evidenceIds.includes(item.chunkId)
+  );
+  const facts = supportingEvidence.map((item, index) => ({
+    id: `confidence:${claim.id}:${index}`,
+    category: claim.dimension,
+    contentType: "finding" as const,
+    text: claim.conclusion,
+    evidenceId: item.id,
+    documentId: item.documentId,
+    documentName: item.documentName,
+    page: item.page,
+    excerpt: item.excerpt,
+    relevance: item.relevance,
+  }));
+  return assessEvidenceConfidence({
+    facts,
+    evidence: supportingEvidence,
+    counterEvidenceCount: claim.counterEvidenceIds.length,
+  }).level;
+}
+
 function containsVerbatimQuote(source: string, quote: string) {
   if (source.includes(quote)) return true;
   return source.replace(/\s+/g, " ").includes(quote.replace(/\s+/g, " ").trim());
@@ -108,6 +171,60 @@ function isUncertaintyOnlyContradiction(
   const benefitRisk = /\b(?:benefit|improv|support\w*|proceed|start|continue)\b[\s\S]{0,180}\b(?:risk|harm|worsen|complication|unsafe|contraindicat)\w*\b|\b(?:risk|harm|worsen|complication|unsafe|contraindicat)\w*\b[\s\S]{0,180}\b(?:benefit|improv|support\w*|proceed|start|continue)\b/i.test(text);
   const explicitDisagreement = /\b(?:in contrast|whereas|disagree|conflict|different recommendation|opposite)\b/i.test(text);
   return uncertainty && !opposingActions && !benefitRisk && !explicitDisagreement;
+}
+
+function isGenuineContradiction(
+  item: ResearchIntelligence["contradictions"][number],
+) {
+  for (let leftIndex = 0; leftIndex < item.sourcePositions.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < item.sourcePositions.length; rightIndex += 1) {
+      const left = item.sourcePositions[leftIndex];
+      const right = item.sourcePositions[rightIndex];
+      if (
+        (sameManagementTarget(left, right) && actionsConflict(left, right)) ||
+        (sameOutcomeQuestion(left, right) && outcomesConflict(left, right)) ||
+        (sameManagementTarget(left, right) && benefitRiskCompetes(left, right)) ||
+        (sameClinicalQuestion(left, right) && uncertaintyDiffers(left, right, item.issue))
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function actionsConflict(left: string, right: string) {
+  const proceed = /\b(?:proceed|start|begin|initiate|continue|approve|recommend)\w*\b/i;
+  const defer = /\b(?:delay|defer|hold|stop|avoid|withhold|contraindicat)\w*\b/i;
+  return (proceed.test(left) && defer.test(right)) || (proceed.test(right) && defer.test(left));
+}
+
+function outcomesConflict(left: string, right: string) {
+  const positive = /\b(?:improv|benefit|positive|effective|response|resolved|decreased)\w*\b/i;
+  const negative = /\b(?:did not|no benefit|negative|ineffective|failed|worsen|increased risk|persisted)\w*\b/i;
+  const leftValues: string[] = left.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+  const rightValues: string[] = right.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+  const differentValues = leftValues.length > 0 &&
+    rightValues.length > 0 &&
+    (leftValues.length !== rightValues.length || leftValues.some((value) => !rightValues.includes(value)));
+  return (positive.test(left) && negative.test(right)) ||
+    (positive.test(right) && negative.test(left)) ||
+    differentValues;
+}
+
+function benefitRiskCompetes(left: string, right: string) {
+  const benefit = /\b(?:benefit|improv|stabili|support|proceed|start|continue)\w*\b/i;
+  const risk = /\b(?:risk|harm|unsafe|worsen|complication|toxicity|overload|edema|bleed|arrhythmia)\w*\b/i;
+  return (benefit.test(left) && risk.test(right)) || (benefit.test(right) && risk.test(left));
+}
+
+function uncertaintyDiffers(left: string, right: string, issue: string) {
+  if (!/\b(?:uncertain|unclear|unknown|not established|not confirmed|insufficient)\b/i.test(issue)) {
+    return false;
+  }
+  const certain = /\b(?:confirmed|established|demonstrated|definitive|conclusive)\b/i;
+  const uncertain = /\b(?:uncertain|unclear|unknown|possible|suspected|not established|not confirmed|insufficient)\b/i;
+  return (certain.test(left) && uncertain.test(right)) || (certain.test(right) && uncertain.test(left));
 }
 
 function numbersAreGrounded(text: string, evidenceIds: string[], evidence: EvidenceItem[]) {

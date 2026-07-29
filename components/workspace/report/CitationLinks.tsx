@@ -12,6 +12,7 @@ export function CitationLinks({
   limit = 3,
   claim,
   relationships = [],
+  align = "start",
 }: {
   citationIds: string[];
   citations: Citation[];
@@ -19,6 +20,7 @@ export function CitationLinks({
   limit?: number;
   claim?: string;
   relationships?: EvidenceRelationship[];
+  align?: "start" | "end";
 }) {
   const { selectInspector, setMobileInspectorOpen } = useWorkspace();
   const mappedCitationIds = relationships.length > 0
@@ -35,7 +37,7 @@ export function CitationLinks({
 
   if (groups.length === 0) return null;
   return (
-    <div className="flex min-w-0 max-w-full flex-wrap gap-1.5">
+    <div className={`flex w-full min-w-0 max-w-full flex-wrap gap-1.5 ${align === "end" ? "justify-start lg:justify-end" : "justify-start"}`}>
       {groups.map((group) => {
         const citation = group[0];
         const excerptCount = new Set(group.map(citationKey)).size;

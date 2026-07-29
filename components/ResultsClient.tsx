@@ -13,6 +13,7 @@ import {
 import { useEffect, useState } from "react";
 
 import { InteractiveReport } from "@/components/workspace/report/InteractiveReport";
+import { ResearchQuestionSummary } from "@/components/workspace/ResearchQuestionSummary";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import { AGENT_IDS, type AgentId, type PipelineStageId, type ResearchSession } from "@/lib/types";
 
@@ -102,10 +103,9 @@ export function ResultsClient({ sessionId }: { sessionId: string }) {
           </div>
         </div>
 
-        <p className="mt-7 font-mono text-[9px] uppercase tracking-[0.26em] text-sky-400">Research question</p>
-        <h1 className="mt-3 max-w-5xl text-[clamp(1.9rem,4.2vw,3.9rem)] font-medium leading-[1.03] tracking-[-0.055em] text-white">
-          {session.question}
-        </h1>
+        <div className="mt-7">
+          <ResearchQuestionSummary question={session.question} />
+        </div>
         <div className="mt-5 flex flex-wrap gap-x-6 gap-y-2 text-[11px] text-slate-600">
           <span>{session.documents.length} source{session.documents.length === 1 ? "" : "s"}</span>
           <span>{session.metrics.pageCount} pages reviewed</span>

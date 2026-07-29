@@ -35,7 +35,7 @@ export async function runTrialSummarizerAgent({
     fallback: () => ({
       agentName: "Clinical Trial Summarizer Agent",
       summary: [...design, ...findings, ...limitations].slice(0, 4).map((fact) => fact.text).join(" "),
-      confidence: confidenceFromEvidence(facts.length, chunks.length),
+      confidence: confidenceFromEvidence(facts, chunks),
       limitations: [
         "If the PDFs contain multiple studies, findings should be validated study-by-study before external sharing.",
       ],

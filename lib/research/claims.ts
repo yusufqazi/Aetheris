@@ -3,7 +3,10 @@ import {
   semanticFamily,
   semanticTopics,
 } from "@/lib/research/evidence-relationships";
+import { areOverlappingClinicalConclusions } from "@/lib/research/finding-deduplication";
 import { isClinicallyMaterialRecommendation } from "@/lib/research/grounding";
+import { assessEvidenceConfidence } from "@/lib/research/confidence";
+import { createClinicalFindingTitle } from "@/lib/research/finding-titles";
 import {
   evidenceNeededForOpenQuestion,
   openQuestionImpact,
@@ -59,7 +62,15 @@ export function buildStructuredResearchClaims({
   const uniqueClaims: StructuredResearchClaim[] = [];
 
   for (const claim of claims.sort((left, right) => claimScore(right, dimensions) - claimScore(left, dimensions))) {
-    if (uniqueClaims.some((existing) => areSemanticallyEquivalent(existing.conclusion, claim.conclusion))) {
+    const duplicate = uniqueClaims.find((existing) =>
+      areOverlappingClinicalConclusions(existing.conclusion, claim.conclusion),
+    );
+    if (duplicate) {
+      duplicate.evidenceIds = unique([...duplicate.evidenceIds, ...claim.evidenceIds]);
+      duplicate.counterEvidenceIds = unique([
+        ...duplicate.counterEvidenceIds,
+        ...claim.counterEvidenceIds,
+      ]).filter((id) => !duplicate.evidenceIds.includes(id));
       continue;
     }
     uniqueClaims.push(claim);
@@ -257,12 +268,10 @@ function factsShareConflictSubject(left: GroundedFact, right: GroundedFact) {
 function groupFactsForClaims(facts: GroundedFact[]) {
   const groups: GroundedFact[][] = [];
   for (const fact of facts) {
-    const dimension = dimensionForFact(fact);
     const existing = groups.find((group) =>
-      dimensionForFact(group[0]) === dimension &&
-      areSemanticallyEquivalent(
-        `${group[0].text} ${group[0].excerpt}`,
-        `${fact.text} ${fact.excerpt}`,
+      areOverlappingClinicalConclusions(
+        group[0].text,
+        fact.text,
       ),
     );
     if (existing) existing.push(fact);
@@ -299,7 +308,7 @@ function claimFromFacts(
     evidenceIds,
     counterEvidenceIds,
     uncertainty: uncertaintyFor(dimension, counterFacts),
-    confidence: confidenceFor(facts, sourceCount, counterEvidenceIds.length),
+    confidence: confidenceFor(facts, counterEvidenceIds.length),
     priority: requested.includes(dimension) ? "important" : "context",
   };
 }
@@ -386,11 +395,12 @@ function uncertaintyFor(dimension: ResearchAnswerDimension, counterFacts: Ground
   return "This conclusion is limited to the uploaded source set.";
 }
 
-function confidenceFor(facts: GroundedFact[], sourceCount: number, counterEvidenceCount: number) {
-  const hasConcreteMeasurement = facts.some((fact) => DIRECT_MEASUREMENT.test(`${fact.text} ${fact.excerpt}`));
-  if ((sourceCount > 1 || hasConcreteMeasurement) && counterEvidenceCount === 0) return "high" as const;
-  if (facts.length > 0) return "medium" as const;
-  return "low" as const;
+function confidenceFor(facts: GroundedFact[], counterEvidenceCount: number) {
+  return assessEvidenceConfidence({
+    facts,
+    counterEvidenceCount,
+    includeLimitationsAsSupport: true,
+  }).level;
 }
 
 export function buildClaimEvidenceMappings(
@@ -512,15 +522,11 @@ function claimScore(claim: StructuredResearchClaim, requested: ResearchAnswerDim
 }
 
 function themeForFacts(facts: GroundedFact[], dimension: ResearchAnswerDimension) {
-  const text = facts.map((fact) => `${fact.text} ${fact.excerpt}`).join(" ");
-  const subjectText = subjectSegment(text);
-  const named = (salientTerms(subjectText).length > 0 ? salientTerms(subjectText) : salientTerms(text)).slice(0, 2);
-  if (facts.some((fact) => fact.contentType === "recommendation")) return named.length ? `${titleCase(named.join(" "))} decisions` : "Treatment decisions";
-  if (facts.some((fact) => fact.contentType === "longitudinal_change")) return named.length ? `${titleCase(named.join(" "))} trajectory` : "Clinical trajectory";
-  if (dimension === "limitation") return named.length ? `${titleCase(named.join(" "))} uncertainty` : "Evidence limitations";
-  if (dimension === "safety") return named.length ? `${titleCase(named.join(" "))} risk` : "Risks and tolerability";
-  if (dimension === "efficacy") return named.length ? `${titleCase(named.join(" "))} outcomes` : "Clinical outcomes";
-  return named.length ? titleCase(named.join(" ")) : "Clinical context";
+  return createClinicalFindingTitle({
+    statement: facts.map((fact) => fact.text).join(" "),
+    dimension,
+    contentTypes: facts.map((fact) => fact.contentType),
+  });
 }
 
 function implicationForFacts(facts: GroundedFact[], dimension: ResearchAnswerDimension) {
@@ -565,17 +571,6 @@ function salientTerms(text: string) {
   return Array.from(new Set(
     text.toLowerCase().match(/[a-z][a-z0-9-]{3,}/g)?.filter((token) => !stop.has(token)) ?? [],
   ));
-}
-
-function subjectSegment(text: string) {
-  return text
-    .replace(/\s+/g, " ")
-    .split(/\b(?:is|are|was|were|has|have|had|showed|shows|reported|reports|recommends|recommended|supports|support|suggests|suggested|improved|worsened|increased|decreased|remained|persisted|limited|excluded|requires|required|needs|needed)\b/i)[0]
-    .slice(0, 140);
-}
-
-function titleCase(value: string) {
-  return value.replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function unique(values: string[]) {

@@ -33,7 +33,7 @@ export async function runLiteratureSearchAgent({
       summary: facts.length > 0
         ? `Retrieved ${facts.length} concrete source facts, including: ${facts.slice(0, 2).map((fact) => fact.text).join(" ")}`
         : "No concrete source facts were present in the retrieved passages.",
-      confidence: confidenceFromEvidence(facts.length, chunks.length),
+      confidence: confidenceFromEvidence(facts, chunks),
       limitations: ["Local fallback ranks and extracts uploaded source text without adding external evidence."],
       warnings: defaultWarnings(),
       evidence: asEvidence(chunks),

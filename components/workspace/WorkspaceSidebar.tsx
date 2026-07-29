@@ -4,10 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Archive,
+  BookOpen,
   Clock3,
   LogOut,
   Plus,
-  Settings,
   UserRound,
 } from "lucide-react";
 
@@ -141,16 +141,12 @@ export function WorkspaceSidebar({ onNavigate }: { onNavigate?: () => void }) {
           </Link>
         )}
         <Link
-          href="/settings"
+          href="/#workflow"
           onClick={onNavigate}
-          className={`flex items-center gap-3 rounded-[0.9rem] px-3 py-2.5 text-sm transition ${
-            pathname === "/settings"
-              ? "bg-white/[0.075] text-white"
-              : "text-slate-500 hover:bg-white/[0.035] hover:text-slate-200"
-          }`}
+          className="flex items-center gap-3 rounded-[0.9rem] px-3 py-2.5 text-sm text-slate-500 transition hover:bg-white/[0.035] hover:text-slate-200"
         >
-          <Settings className="h-4 w-4" />
-          Settings
+          <BookOpen className="h-4 w-4" />
+          How Aetheris works
         </Link>
       </div>
     </div>

@@ -124,8 +124,8 @@ function Findings({ items, citations, session }: { items: InvestigationFinding[]
               </div>
             </details>
           </div>
-          <div data-testid="finding-citations" className="col-start-2 min-w-0 max-w-full lg:col-start-3 lg:flex lg:w-full lg:justify-end">
-            <CitationLinks citationIds={item.citationIds} citations={citations} session={session} claim={item.statement} relationships={item.relationships} />
+          <div data-testid="finding-citations" className="col-start-2 min-w-0 max-w-full lg:col-start-3 lg:w-full">
+            <CitationLinks citationIds={item.citationIds} citations={citations} session={session} claim={item.statement} relationships={item.relationships} align="end" />
           </div>
         </article>
             );
