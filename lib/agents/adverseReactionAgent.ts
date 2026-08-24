@@ -7,6 +7,7 @@ import {
   defaultWarnings,
   groundedFactsFromChunks,
   hasConcreteContent,
+  normalizedReasoningInput,
   type FallbackObserver,
 } from "@/lib/agents/shared";
 import { factsByCategory } from "@/lib/research/grounding";
@@ -41,7 +42,10 @@ export async function runAdverseReactionAgent({
 
   return runStructuredGeneration<AdverseReactionAgentOutput>({
     system: getAgentPrompt("adverse-reaction"),
-    user: JSON.stringify({ question, chunks: sourceChunks.slice(0, 6) }),
+    user: JSON.stringify({
+      question,
+      normalizedEvidence: normalizedReasoningInput(sourceChunks.slice(0, 6)),
+    }),
     schema: adverseReactionOutputSchema,
     schemaName: "adverse_reaction_output",
     qualityCheck: (output) => hasConcreteContent(output),

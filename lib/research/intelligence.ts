@@ -11,8 +11,16 @@ import {
   sameManagementTarget,
   sameOutcomeQuestion,
 } from "@/lib/research/conflict-semantics";
-import { polishPrimaryAnswerFluency } from "@/lib/research/primary-answer";
+import {
+  containsPrimaryAnswerSourceLeakage,
+  polishPrimaryAnswerFluency,
+} from "@/lib/research/primary-answer";
 import { createClinicalFindingTitle } from "@/lib/research/finding-titles";
+import {
+  generatedFindingQualityIssues,
+  isGeneratedFindingReviewable,
+  polishGeneratedFinding,
+} from "@/lib/research/finding-wording";
 
 export function sanitizeResearchIntelligence(
   intelligence: ResearchIntelligence | undefined,
@@ -51,25 +59,29 @@ export function sanitizeResearchIntelligence(
     ) === index)
     .slice(0, 24);
   const structuredClaims = mergeOverlappingClaims((intelligence.structuredClaims ?? [])
-    .map((claim) => ({
-      ...claim,
-      conclusion: claim.conclusion.trim(),
-      theme: createClinicalFindingTitle({
-        statement: claim.conclusion,
-        providedTitle: claim.theme,
-        dimension: claim.dimension,
-      }),
-      clinicalImplication: claim.clinicalImplication?.trim(),
-      reasoningSummary: claim.reasoningSummary.trim(),
-      uncertainty: claim.uncertainty.trim(),
-      evidenceIds: keepIds(claim.evidenceIds).filter((id) => evidenceSupportsClaim(id, claim, evidence)),
-      counterEvidenceIds: keepIds(claim.counterEvidenceIds).filter((id) => evidenceSupportsClaim(id, claim, evidence)),
-    }))
+    .map((claim) => {
+      const conclusion = polishGeneratedFinding(claim.conclusion, claim.theme);
+      return {
+        ...claim,
+        conclusion,
+        theme: createClinicalFindingTitle({
+          statement: conclusion,
+          providedTitle: conclusion === claim.conclusion ? claim.theme : undefined,
+          dimension: claim.dimension,
+        }),
+        clinicalImplication: claim.clinicalImplication?.trim(),
+        reasoningSummary: claim.reasoningSummary.trim(),
+        uncertainty: claim.uncertainty.trim(),
+        evidenceIds: keepIds(claim.evidenceIds).filter((id) => evidenceSupportsClaim(id, claim, evidence)),
+        counterEvidenceIds: keepIds(claim.counterEvidenceIds).filter((id) => evidenceSupportsClaim(id, claim, evidence)),
+      };
+    })
     .filter((claim) =>
       claim.conclusion.length >= 18 &&
       claim.reasoningSummary.length >= 24 &&
       claim.evidenceIds.length > 0 &&
       isCompleteStatement(claim.conclusion) &&
+      isGeneratedFindingReviewable(claim.conclusion) &&
       numbersAreGrounded(`${claim.conclusion} ${claim.reasoningSummary}`, claim.evidenceIds, evidence),
     ))
     .map((claim) => ({
@@ -254,12 +266,20 @@ export function researchIntelligenceGroundingIssues(
   if (!sanitized) return ["missing-structured-output"];
 
   const issues: string[] = [];
+  if ((intelligence?.structuredClaims ?? []).some((claim) =>
+    generatedFindingQualityIssues(claim.conclusion).length > 0
+  )) {
+    issues.push("finding-output-malformed");
+  }
   if (sanitized.directAnswer.length < 40) issues.push("direct-answer-too-short");
   if (!isCompleteStatement(sanitized.directAnswer) || !/[.!?]$/.test(sanitized.directAnswer)) {
     issues.push("direct-answer-incomplete");
   }
   if (/^(?:on\s+\w+|factors?\s+(?:arguing|for|against)|findings?|summary|primary answer)\s*[:,]/i.test(sanitized.directAnswer)) {
     issues.push("direct-answer-malformed");
+  }
+  if (containsPrimaryAnswerSourceLeakage(sanitized.directAnswer)) {
+    issues.push("direct-answer-source-text-leakage");
   }
   const allEvidenceIds = evidence.flatMap((item) => [item.id, item.chunkId]);
   if (!numbersAreGrounded(sanitized.directAnswer, allEvidenceIds, evidence)) {

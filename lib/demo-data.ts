@@ -4,7 +4,8 @@ import { chunkDocument } from "@/lib/pdf.shared";
 import { chunksToEvidence } from "@/lib/embeddings";
 import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
 import { assembleResearchArtifacts } from "@/lib/research/artifacts";
-import { extractGroundedFacts } from "@/lib/research/grounding";
+import { normalizeEvidenceItems } from "@/lib/research/evidence-normalization";
+import { extractGroundedFactsFromNormalizedEvidence } from "@/lib/research/normalized-grounding";
 import { createAgentExecutions, createResearchSession } from "@/lib/research/session";
 import { AGENT_IDS, type AnalysisBundle, type ResearchEvent, type ResearchSession } from "@/lib/types";
 
@@ -51,9 +52,14 @@ export function makeDemoSession(): ResearchSession {
     retrievalMethod: "lexical" as const,
   }));
   const evidence = chunksToEvidence(chunks, "Ranked within the explicit Aetheris demo source set");
+  const normalizedEvidence = normalizeEvidenceItems(evidence);
   const bundle = {
     ...makeResults(evidence),
-    groundedFacts: extractGroundedFacts(evidence, question),
+    groundedFacts: extractGroundedFactsFromNormalizedEvidence(
+      normalizedEvidence,
+      evidence,
+      question,
+    ),
   };
   const artifacts = assembleResearchArtifacts(bundle, evidence, documents);
   const session = createResearchSession({

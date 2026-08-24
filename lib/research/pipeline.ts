@@ -12,13 +12,15 @@ import { runReportAgent } from "@/lib/agents/reportAgent";
 import { runTrialSummarizerAgent } from "@/lib/agents/trialSummarizerAgent";
 import {
   confidenceFromEvidence,
+  groundedFactsFromChunks,
   type FallbackObserver,
 } from "@/lib/agents/shared";
 import { assessEvidenceConfidence } from "@/lib/research/confidence";
 import { getLlmConfiguration } from "@/lib/llm";
 import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
 import { assembleResearchArtifacts } from "@/lib/research/artifacts";
-import { extractGroundedFacts } from "@/lib/research/grounding";
+import { normalizeEvidenceItems } from "@/lib/research/evidence-normalization";
+import { extractGroundedFactsFromNormalizedEvidence } from "@/lib/research/normalized-grounding";
 import { cleanSearchChunks } from "@/lib/research/source-cleaning";
 import type { ResearchEventInput } from "@/lib/research/events";
 import {
@@ -232,7 +234,12 @@ export async function runResearchPipeline({
       ),
     ],
   );
-  const groundedFacts = extractGroundedFacts(evidence, session.question);
+  const normalizedEvidence = normalizeEvidenceItems(evidence);
+  const groundedFacts = extractGroundedFactsFromNormalizedEvidence(
+    normalizedEvidence,
+    evidence,
+    session.question,
+  );
   await emit({
     type: "evidence.ready",
     phase: "retrieving",
@@ -284,10 +291,7 @@ export async function runResearchPipeline({
           await delay(DEMO_COMPLETION_DELAY[agentId]);
         }
 
-        const specialistFacts = extractGroundedFacts(
-          chunksToEvidence(rankedChunks, `Confidence evidence for ${agentLabel(agentId)}`),
-          session.question,
-        );
+        const specialistFacts = groundedFactsFromChunks(rankedChunks, session.question);
         const anchoredOutput = {
           ...output,
           confidence: confidenceFromEvidence(
@@ -436,6 +440,7 @@ export async function runResearchPipeline({
       debate,
       facts: groundedFacts,
       evidence,
+      normalizedEvidence,
       onFallback,
     });
     await announceFallbackIfNeeded();

@@ -18,11 +18,39 @@ export async function runDebateAgent(payload: {
   trial: TrialSummarizerAgentOutput;
   onFallback?: FallbackObserver;
 }) {
-  const { literature, drug, adverse, trial, onFallback } = payload;
+  const { question, literature, drug, adverse, trial, onFallback } = payload;
+  const modelPayload = {
+    question,
+    specialists: {
+      literature: { summary: literature.summary },
+      drugInteractions: {
+        summary: drug.summary,
+        findings: drug.findings.map((finding) => ({
+          possibleInteraction: finding.possibleInteraction,
+          severityEstimate: finding.severityEstimate,
+          uncertaintyLevel: finding.uncertaintyLevel,
+          notes: finding.notes,
+        })),
+      },
+      adverseReactions: {
+        summary: adverse.summary,
+        findings: adverse.findings.map((finding) => ({
+          adverseEvent: finding.adverseEvent,
+          frequency: finding.frequency,
+          affectedPopulation: finding.affectedPopulation,
+          confidenceLevel: finding.confidenceLevel,
+        })),
+      },
+      clinicalContext: {
+        summary: trial.summary,
+        findings: trial.findings,
+      },
+    },
+  };
 
   return runStructuredGeneration<DebateConsensusOutput>({
     system: getAgentPrompt("debate-consensus"),
-    user: JSON.stringify(payload),
+    user: JSON.stringify(modelPayload),
     schema: debateConsensusOutputSchema,
     schemaName: "debate_consensus_output",
     qualityCheck: (output) => output.finalConsensus.trim().length > 30 && hasConcreteContent(output),

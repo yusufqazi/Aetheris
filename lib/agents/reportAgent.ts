@@ -6,6 +6,7 @@ import type {
   DebateConsensusOutput,
   DrugInteractionAgentOutput,
   LiteratureSearchAgentOutput,
+  NormalizedEvidenceBundle,
   TrialSummarizerAgentOutput,
 } from "@/lib/types";
 import { defaultWarnings, type FallbackObserver } from "@/lib/agents/shared";
@@ -25,7 +26,12 @@ import {
 import { researchDirectorOutputSchema } from "@/lib/research/schemas";
 import { semanticFamily, semanticTopics } from "@/lib/research/evidence-relationships";
 import { isGenericOpenQuestion } from "@/lib/research/open-questions";
-import { polishPrimaryAnswerFluency } from "@/lib/research/primary-answer";
+import {
+  containsPrimaryAnswerSourceLeakage,
+  primaryAnswerQualityIssues,
+  polishPrimaryAnswerFluency,
+} from "@/lib/research/primary-answer";
+import { normalizedEvidenceForModel } from "@/lib/research/evidence-normalization";
 import type { EvidenceItem, GroundedFact, ResearchIntelligence } from "@/lib/types";
 
 export async function runReportAgent(payload: {
@@ -37,10 +43,12 @@ export async function runReportAgent(payload: {
   debate: DebateConsensusOutput;
   facts: GroundedFact[];
   evidence: EvidenceItem[];
+  normalizedEvidence: NormalizedEvidenceBundle;
   onFallback?: FallbackObserver;
 }) {
   const { question, facts, evidence, onFallback } = payload;
   const primaryAnswerCoverage = assessPrimaryAnswerEvidence(question, facts);
+  const sourceDocumentCount = new Set(evidence.map((item) => item.documentId)).size;
   const groundedReport = buildGroundedReport({ question, facts, evidence });
   const fallbackIntelligence = buildFallbackResearchIntelligence({
     question,
@@ -58,27 +66,34 @@ export async function runReportAgent(payload: {
       supportedParts: primaryAnswerCoverage.supportedParts,
       unsupportedParts: primaryAnswerCoverage.unsupportedParts,
     },
-    groundedFacts: facts,
-    sourcePassages: evidence.map((item) => ({
-      evidenceId: item.id,
-      chunkId: item.chunkId,
-      document: item.documentName,
-      page: item.page,
-      excerpt: item.excerpt,
-      relevance: item.relevance,
+    primaryAnswerCandidates: primaryAnswerCoverage.eligibleFacts.map((fact) => ({
+      contentType: fact.contentType,
+      category: fact.category,
+      statement: fact.text,
+      evidenceId: fact.evidenceId,
     })),
+    normalizedEvidence: normalizedEvidenceForModel(payload.normalizedEvidence),
     specialists: {
       literature: {
         summary: payload.literature.summary,
-        excerpts: payload.literature.topRelevantExcerpts,
       },
       drugInteractions: {
         summary: payload.drug.summary,
-        findings: payload.drug.findings,
+        findings: payload.drug.findings.map((finding) => ({
+          possibleInteraction: finding.possibleInteraction,
+          severityEstimate: finding.severityEstimate,
+          uncertaintyLevel: finding.uncertaintyLevel,
+          notes: finding.notes,
+        })),
       },
       adverseReactions: {
         summary: payload.adverse.summary,
-        findings: payload.adverse.findings,
+        findings: payload.adverse.findings.map((finding) => ({
+          adverseEvent: finding.adverseEvent,
+          frequency: finding.frequency,
+          affectedPopulation: finding.affectedPopulation,
+          confidenceLevel: finding.confidenceLevel,
+        })),
       },
       clinicalContext: {
         summary: payload.trial.summary,
@@ -102,6 +117,15 @@ export async function runReportAgent(payload: {
     schema: researchDirectorOutputSchema,
     schemaName: "research_intelligence_output",
     qualityCheck: (output) => {
+      const primaryAnswerIssues = primaryAnswerQualityIssues(output.directAnswer, {
+        singleDocument: sourceDocumentCount <= 1,
+      });
+      if (primaryAnswerIssues.length > 0) {
+        return {
+          valid: false,
+          reason: primaryAnswerIssues.map((issue) => `direct-answer-${issue}`).join(", "),
+        };
+      }
       const issues = researchIntelligenceGroundingIssues(
         toResearchIntelligence(output, fallbackIntelligence, facts, question),
         evidence,
@@ -238,6 +262,7 @@ function completeDirectAnswer(
 ) {
   const candidate = polishPrimaryAnswerFluency(generated);
   const fallback = polishPrimaryAnswerFluency(groundedFallback);
+  const singleDocument = new Set(facts.map((fact) => fact.documentId)).size <= 1;
   if (assessPrimaryAnswerEvidence(question, facts).evidenceLimited) {
     return fallback;
   }
@@ -246,7 +271,9 @@ function completeDirectAnswer(
     return fallback;
   }
   if (
+    primaryAnswerQualityIssues(candidate, { singleDocument }).length > 0 ||
     containsPrimaryAnswerNoise(candidate) ||
+    containsPrimaryAnswerSourceLeakage(candidate) ||
     copiesSourcePassage(candidate, facts) ||
     !coversRequestedPrimaryAnswer(candidate, question, facts)
   ) {

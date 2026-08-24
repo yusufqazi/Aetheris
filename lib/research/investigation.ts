@@ -19,9 +19,15 @@ import {
   areOverlappingClinicalConclusions,
 } from "@/lib/research/finding-deduplication";
 import { assessEvidenceConfidence } from "@/lib/research/confidence";
-import { polishPrimaryAnswerFluency } from "@/lib/research/primary-answer";
+import {
+  containsPrimaryAnswerSourceLeakage,
+  polishPrimaryAnswerFluency,
+} from "@/lib/research/primary-answer";
 import { createClinicalFindingTitle } from "@/lib/research/finding-titles";
-import { polishGeneratedFinding } from "@/lib/research/finding-wording";
+import {
+  isGeneratedFindingReviewable,
+  polishGeneratedFinding,
+} from "@/lib/research/finding-wording";
 import {
   assessPrimaryAnswerEvidence,
   buildBestSupportedAnswer,
@@ -171,11 +177,21 @@ export function buildInvestigationData(session: ResearchSession): InvestigationD
     mergeInvestigationFindings([...claimFindings, ...factFindings]),
     requestedThemes,
   );
-  const findings = selectedFindings.map((finding) => ({
-    ...finding,
-    evidenceQuery: finding.statement,
-    statement: polishGeneratedFinding(finding.statement, finding.theme),
-  }));
+  const findings = selectedFindings
+    .map((finding) => {
+      const statement = polishGeneratedFinding(finding.statement, finding.theme);
+      return {
+        ...finding,
+        evidenceQuery: finding.statement,
+        statement,
+        theme: createClinicalFindingTitle({
+          statement,
+          providedTitle: statement === finding.statement ? finding.theme : undefined,
+          dimension: finding.dimension,
+        }),
+      };
+    })
+    .filter((finding) => isGeneratedFindingReviewable(finding.statement));
   const conflicts = uniqueConflicts([
     ...buildCrossDocumentConflicts(facts, citations),
     ...conflictFacts.map((fact) => conflictFromFact(fact, citations, facts)),
@@ -1006,7 +1022,8 @@ function appearsIncompleteSourceText(text: string, excerpt: string) {
 }
 
 function isReviewableFindingStatement(statement: string) {
-  const value = statement.replace(/\s+/g, " ").trim();
+  const value = polishGeneratedFinding(statement).replace(/\s+/g, " ").trim();
+  if (!isGeneratedFindingReviewable(value)) return false;
   const words = value.match(/[A-Za-z0-9][A-Za-z0-9'-]*/g) ?? [];
   if (words.length < 5 || appearsIncompleteSourceText(value, value)) return false;
   const hasPredicate = /\b(?:is|are|was|were|has|have|had|show(?:s|ed)?|report(?:s|ed)?|demonstrat(?:e|es|ed)|improv(?:e|es|ed|ement)|reduc(?:e|es|ed|tion)|increas(?:e|es|ed)|decreas(?:e|es|ed)|remain(?:s|ed)?|persist(?:s|ed)?|extend(?:s|ed)?|fail(?:s|ed)?|meet(?:s)?|support(?:s|ed)?|suggest(?:s|ed)?|indicat(?:e|es|ed)|limit(?:s|ed)?|exclud(?:e|es|ed)|recommend(?:s|ed)?|may|might|can|could|should|would)\b/i.test(value);
@@ -1117,6 +1134,7 @@ function normalizeDirectAnswer(answer: string, facts: GroundedFact[], question: 
   const prematurelyIncomplete = isIncompletePrimaryAnswer(value) && hasSupportedSynthesis;
   if (
     !malformed &&
+    !containsPrimaryAnswerSourceLeakage(value) &&
     !unsupportedCertainty &&
     !unsupportedEfficacyClaim &&
     !prematurelyIncomplete &&

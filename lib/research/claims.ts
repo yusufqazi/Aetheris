@@ -8,6 +8,10 @@ import { isClinicallyMaterialRecommendation } from "@/lib/research/grounding";
 import { assessEvidenceConfidence } from "@/lib/research/confidence";
 import { createClinicalFindingTitle } from "@/lib/research/finding-titles";
 import {
+  isGeneratedFindingReviewable,
+  polishGeneratedFinding,
+} from "@/lib/research/finding-wording";
+import {
   evidenceNeededForOpenQuestion,
   openQuestionImpact,
 } from "@/lib/research/open-questions";
@@ -451,17 +455,20 @@ function claimMatchesFact(claim: StructuredResearchClaim, fact: GroundedFact) {
 }
 
 function normalizeClaimConclusion(text: string) {
-  const value = text
+  const value = polishGeneratedFinding(text
     .replace(/^(?:(?:key\s+)?finding|observation|limitation|safety observation|potential concern|evidence)\s*[:\-]\s*/i, "")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim());
   if (!value) return "The uploaded evidence does not support a specific conclusion.";
-  return /[.!?]$/.test(value) ? value : `${value}.`;
+  return value;
 }
 
 function isCompleteClaimText(text: string) {
-  const value = text.trim();
-  return value.length >= 18 && !/\.\.\.|…/.test(value) && !INCOMPLETE_ENDING.test(value);
+  const value = polishGeneratedFinding(text);
+  return value.length >= 18 &&
+    !/\.\.\.|…/.test(value) &&
+    !INCOMPLETE_ENDING.test(value) &&
+    isGeneratedFindingReviewable(value);
 }
 
 function factSpecificity(fact: GroundedFact) {

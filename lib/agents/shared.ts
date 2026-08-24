@@ -1,8 +1,17 @@
 import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
 import { chunksToEvidence } from "@/lib/embeddings";
-import { extractGroundedFacts } from "@/lib/research/grounding";
 import { assessEvidenceConfidence } from "@/lib/research/confidence";
-import type { EvidenceItem, GroundedFact, SearchChunk } from "@/lib/types";
+import {
+  normalizeEvidenceItems,
+  normalizedEvidenceForModel,
+} from "@/lib/research/evidence-normalization";
+import { extractGroundedFactsFromNormalizedEvidence } from "@/lib/research/normalized-grounding";
+import type {
+  EvidenceItem,
+  GroundedFact,
+  NormalizedEvidenceBundle,
+  SearchChunk,
+} from "@/lib/types";
 
 export type FallbackObserver = (reason: string) => void;
 
@@ -14,10 +23,25 @@ export function asEvidence(chunks: SearchChunk[]): EvidenceItem[] {
 }
 
 export function groundedFactsFromChunks(chunks: SearchChunk[], question: string): GroundedFact[] {
-  return extractGroundedFacts(
-    chunksToEvidence(chunks, "Exact source passage selected for deterministic fact extraction."),
+  const evidence = chunksToEvidence(
+    chunks,
+    "Exact source passage selected for deterministic fact extraction.",
+  );
+  return extractGroundedFactsFromNormalizedEvidence(
+    normalizeEvidenceItems(evidence),
+    evidence,
     question,
   );
+}
+
+export function normalizedEvidenceFromChunks(chunks: SearchChunk[]): NormalizedEvidenceBundle {
+  return normalizeEvidenceItems(
+    chunksToEvidence(chunks, "Source passage retained for citation verification."),
+  );
+}
+
+export function normalizedReasoningInput(chunks: SearchChunk[]) {
+  return normalizedEvidenceForModel(normalizedEvidenceFromChunks(chunks));
 }
 
 export function hasConcreteContent(value: unknown) {

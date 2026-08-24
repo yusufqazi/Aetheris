@@ -109,6 +109,48 @@ export interface EvidenceItem {
   endOffset?: number | null;
 }
 
+export type NormalizedEvidenceKind =
+  | "observation"
+  | "table_fact"
+  | "diagnosis"
+  | "recommendation"
+  | "uncertainty"
+  | "limitation";
+
+export interface NormalizedTableFact {
+  label: string;
+  values: string[];
+}
+
+export interface NormalizedEvidenceObject {
+  id: string;
+  evidenceId: string;
+  chunkId: string;
+  documentId: string;
+  page?: number | null;
+  sectionId?: string | null;
+  kind: NormalizedEvidenceKind;
+  statement: string;
+  numericValues: string[];
+  table?: NormalizedTableFact | null;
+  sourceExcerpt?: string;
+  sourceStartOffset?: number | null;
+  sourceEndOffset?: number | null;
+}
+
+export interface NormalizedSectionHeading {
+  id: string;
+  evidenceId: string;
+  documentId: string;
+  page?: number | null;
+  heading: string;
+}
+
+export interface NormalizedEvidenceBundle {
+  objects: NormalizedEvidenceObject[];
+  sections: NormalizedSectionHeading[];
+}
+
 export interface Citation {
   id: string;
   evidenceId: string;

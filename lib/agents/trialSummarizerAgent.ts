@@ -7,6 +7,7 @@ import {
   defaultWarnings,
   groundedFactsFromChunks,
   hasConcreteContent,
+  normalizedReasoningInput,
   type FallbackObserver,
 } from "@/lib/agents/shared";
 import { factsByCategory } from "@/lib/research/grounding";
@@ -27,7 +28,10 @@ export async function runTrialSummarizerAgent({
   const limitations = factsByCategory(facts, "limitation", "exclusion");
   return runStructuredGeneration<TrialSummarizerAgentOutput>({
     system: getAgentPrompt("trial-summarizer"),
-    user: JSON.stringify({ question, chunks: chunks.slice(0, 6) }),
+    user: JSON.stringify({
+      question,
+      normalizedEvidence: normalizedReasoningInput(chunks.slice(0, 6)),
+    }),
     schema: trialSummarizerOutputSchema,
     schemaName: "trial_summarizer_output",
     qualityCheck: (output) => output.findings.length > 0 && hasConcreteContent(output),

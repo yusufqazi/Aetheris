@@ -7,6 +7,7 @@ import {
   defaultWarnings,
   groundedFactsFromChunks,
   hasConcreteContent,
+  normalizedReasoningInput,
   type FallbackObserver,
 } from "@/lib/agents/shared";
 import { literatureSearchOutputSchema } from "@/lib/research/schemas";
@@ -23,7 +24,10 @@ export async function runLiteratureSearchAgent({
   const facts = groundedFactsFromChunks(chunks, question);
   return runStructuredGeneration<LiteratureSearchAgentOutput>({
     system: getAgentPrompt("literature-search"),
-    user: JSON.stringify({ question, chunks: chunks.slice(0, 6) }),
+    user: JSON.stringify({
+      question,
+      normalizedEvidence: normalizedReasoningInput(chunks.slice(0, 6)),
+    }),
     schema: literatureSearchOutputSchema,
     schemaName: "literature_search_output",
     qualityCheck: (output) => output.topRelevantExcerpts.length > 0 && hasConcreteContent(output),

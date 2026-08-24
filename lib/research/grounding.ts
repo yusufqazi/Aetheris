@@ -12,7 +12,11 @@ import type {
   ReportOutput,
 } from "@/lib/types";
 import { assessEvidenceConfidence } from "@/lib/research/confidence";
-import { polishPrimaryAnswerFluency } from "@/lib/research/primary-answer";
+import {
+  containsPrimaryAnswerSourceLeakage,
+  paraphrasePrimaryAnswerEvidence,
+  polishPrimaryAnswerFluency,
+} from "@/lib/research/primary-answer";
 
 const CONCRETE_SIGNAL = /(?:\b\d+(?:\.\d+)?\s*%|\bp\s*[=<]\s*0?\.\d+|\b\d+(?:\.\d+)?\s+(?:participants?|patients?|subjects?|weeks?|months?|years?|events?|groups?|arms?|mg|mcg|mL|mmHg|bpm|ms)\b|\b[A-Za-z][A-Za-z /_-]{1,30}\s+\d+(?:\.\d+)?\s+(?:(?:to|→|->)\s+)?\d+(?:\.\d+)?\b|randomi[sz]ed|blind(?:ed)?|controlled|comparator|endpoint|adverse event|complication|excluded|uncertain|does not prove|not establish|follow-up|recommended|diagnos|disease|condition|syndrome|symptom|laborator|biomarker|imaging|procedure|treatment|therapy|medication|dose|improved|decreased|increased|normalized|persisted|progressed|resolved|risk|concern|discrepancy|contradiction)/i;
 const CLINICAL_MEASUREMENT = /\b\d+(?:\.\d+)?\s*(?:%|mg(?:\/kg)?|mcg|µg|ug|g\/dL|mg\/dL|ng\/mL|pg\/mL|mmol\/L|mEq\/L|U\/L|IU\/L|mg\/L|mmHg|bpm|ms|mL\/min|cells?\/µL|copies\/mL|cm|mm|weeks?|months?|years?)\b|\bp\s*[=<]\s*0?\.\d+/i;
@@ -111,6 +115,9 @@ export function isIncompletePrimaryAnswer(value: string) {
 
 export function buildBestSupportedAnswer(question: string, facts: GroundedFact[]) {
   const coverage = assessPrimaryAnswerEvidence(question, facts);
+  if (new Set(facts.map((fact) => fact.documentId)).size <= 1) {
+    return buildSingleDocumentAnswer(question, coverage);
+  }
   if (coverage.evidenceLimited) {
     return buildEvidenceLimitedAnswer(coverage);
   }
@@ -177,7 +184,10 @@ export function assessPrimaryAnswerEvidence(
   facts: GroundedFact[],
 ): PrimaryAnswerEvidenceAssessment {
   const requestedParts = requestedPrimaryAnswerParts(question);
-  const eligibleFacts = facts.filter(isPrimaryAnswerFact);
+  const eligibleFacts = facts
+    .map(sanitizePrimaryAnswerFact)
+    .filter((fact): fact is GroundedFact => Boolean(fact))
+    .filter(isPrimaryAnswerFact);
   const factsByPart = Object.fromEntries(
     requestedParts.map((part) => [
       part,
@@ -210,7 +220,10 @@ function requestedPrimaryAnswerParts(question: string): PrimaryAnswerPart[] {
   };
 
   add("diagnosis", /\b(?:diagnos|etiology|cause|most likely|leading interpretation)\w*\b/i);
-  add("treatment", /\b(?:treat|management|therapy|priority|recommend|proceed|begin|start|defer|delay|hold|stop)\w*\b/i);
+  add(
+    "treatment",
+    /\b(?:management|treatment priority|therapy priority|recommend|proceed|begin|start|defer|delay|hold|stop)\w*\b|\b(?:what|which|how)\b.{0,36}\b(?:treat|therap)\w*\b/i,
+  );
   add("tradeoff", /\b(?:tradeoff|trade-off|balance|benefit versus risk|competing choice|constraint)\w*\b/i);
   add("remaining-evidence", /\b(?:remaining|missing|unresolved|uncertain|additional evidence|evidence still needed|open questions?)\w*\b/i);
   add("efficacy", /\b(?:efficacy|effective|response|benefit|outcomes?|improvement)\w*\b/i);
@@ -244,6 +257,18 @@ function isPrimaryAnswerFact(fact: GroundedFact) {
     return false;
   }
   return true;
+}
+
+function sanitizePrimaryAnswerFact(fact: GroundedFact) {
+  const text = paraphrasePrimaryAnswerEvidence(fact.text);
+  const excerpt = text || paraphrasePrimaryAnswerEvidence(fact.excerpt);
+  const answerText = text || excerpt;
+  if (!answerText || containsPrimaryAnswerSourceLeakage(answerText)) return null;
+  return {
+    ...fact,
+    text: answerText,
+    excerpt: answerText,
+  };
 }
 
 function factSupportsAnswerPart(fact: GroundedFact, part: PrimaryAnswerPart) {
@@ -298,9 +323,10 @@ function buildEvidenceLimitedAnswer(coverage: PrimaryAnswerEvidenceAssessment) {
       const risk = facts.find((fact) => isMaterialTradeoff(`${fact.text} ${fact.excerpt}`));
       return risk ? [synthesizeTradeoff(undefined, risk, "tradeoff")] : [];
     }
-    if (part === "remaining-evidence" || part === "limitations") {
+    if (part === "remaining-evidence") {
       return [synthesizeRemainingEvidence(facts.slice(0, 2), "remaining evidence")];
     }
+    if (part === "limitations") return [evidenceLimitedFactSentence(primary.text)];
     return [evidenceLimitedFactSentence(primary.text)];
   }).filter(Boolean);
   const uniqueSupported = Array.from(new Set(supportedSentences)).slice(0, 4);
@@ -316,6 +342,101 @@ function buildEvidenceLimitedAnswer(coverage: PrimaryAnswerEvidenceAssessment) {
     ? `${naturalList(unsupported, true)} cannot be determined from the uploaded evidence.`
     : "The available evidence does not support a broader conclusion beyond these directly documented findings.";
   return normalizeEvidenceLimitedProse([...uniqueSupported, limitation].join(" "));
+}
+
+function buildSingleDocumentAnswer(
+  question: string,
+  coverage: PrimaryAnswerEvidenceAssessment,
+) {
+  const scopedFacts = uniqueFacts(coverage.supportedParts.flatMap(
+    (part) => coverage.factsByPart[part] ?? [],
+  ));
+  const clinicalFindings = rankFactsForQuestion(scopedFacts.filter((fact) =>
+    !["limitation", "discrepancy", "unresolved_question", "recommendation"].includes(fact.contentType)
+  ), question);
+  const recommendations = rankFactsForQuestion(scopedFacts.filter((fact) =>
+    fact.contentType === "recommendation"
+  ), question);
+  const limitations = rankFactsForQuestion(scopedFacts.filter((fact) =>
+    ["limitation", "discrepancy", "unresolved_question"].includes(fact.contentType)
+  ), question);
+  const established = clinicalFindings[0] ?? recommendations[0];
+  const implication = recommendations.find((fact) => fact.id !== established?.id)
+    ?? clinicalFindings.find((fact) => fact.id !== established?.id);
+  const sentences: string[] = [];
+
+  if (established) {
+    sentences.push(singleDocumentEstablishedSentence(established.text));
+  } else {
+    sentences.push(
+      "The uploaded document does not contain a complete clinical finding that directly establishes the requested conclusion.",
+    );
+  }
+
+  if (implication) {
+    sentences.push(singleDocumentImplicationSentence(implication));
+  } else {
+    sentences.push(
+      "A separate safety or efficacy implication cannot be supported from the available evidence.",
+    );
+  }
+
+  const unsupported = coverage.unsupportedParts.map(primaryAnswerPartLabel);
+  if (unsupported.length > 0) {
+    sentences.push(
+      `${naturalList(unsupported, true)} cannot be determined from the available evidence.`,
+    );
+  } else {
+    const unresolved = limitations.find((fact) =>
+      /\b(?:cannot determine|uncertain|unknown|not established|not supported|unresolved)\b/i.test(fact.text)
+    );
+    sentences.push(unresolved
+      ? evidenceLimitedFactSentence(unresolved.text)
+      : "The document alone does not establish conclusions beyond these directly supported points.");
+  }
+
+  const followUp = limitations.find((fact) =>
+    fact.id !== established?.id &&
+    fact.id !== implication?.id &&
+    /\b(?:additional|further|pending|needed|requires?|follow-up|study data|results?|testing)\b/i.test(fact.text)
+  ) ?? limitations.find((fact) =>
+    fact.id !== established?.id &&
+    fact.id !== implication?.id &&
+    coverage.requestedParts.includes("limitations")
+  );
+  if (followUp) sentences.push(evidenceLimitedFactSentence(followUp.text));
+
+  return normalizeEvidenceLimitedProse(uniqueStrings(sentences).slice(0, 4).join(" "));
+}
+
+function singleDocumentEstablishedSentence(value: string) {
+  const supportedSentence = evidenceLimitedFactSentence(value);
+  if (/^The available evidence shows\b/i.test(supportedSentence)) {
+    return supportedSentence;
+  }
+  const sentence = supportedSentence
+    .replace(/^The available evidence shows that\s+/i, "")
+    .replace(/^The available evidence shows\s+/i, "")
+    .replace(/[.!?]+$/, "")
+    .trim();
+  if (!sentence) {
+    return "The uploaded document does not contain a complete clinical finding that directly establishes the requested conclusion.";
+  }
+  return `The document establishes that ${lowercaseFirst(sentence)}.`;
+}
+
+function singleDocumentImplicationSentence(fact: GroundedFact) {
+  const sentence = evidenceLimitedFactSentence(fact.text)
+    .replace(/^The available evidence shows that\s+/i, "")
+    .replace(/^The available evidence shows\s+/i, "")
+    .replace(/[.!?]+$/, "")
+    .trim();
+  const dimension = fact.contentType === "safety_observation" || fact.category === "safety"
+    ? "safety"
+    : "efficacy";
+  return sentence
+    ? `The most important ${dimension} implication is that ${lowercaseFirst(sentence)}.`
+    : `A separate ${dimension} implication cannot be supported from the available evidence.`;
 }
 
 function primaryAnswerPartLabel(part: PrimaryAnswerPart) {
@@ -338,14 +459,20 @@ function primaryAnswerPartLabel(part: PrimaryAnswerPart) {
 }
 
 function evidenceLimitedFactSentence(value: string) {
-  const text = normalizeDisplayStatement(cleanSourcePassage(value))
+  const text = paraphrasePrimaryAnswerEvidence(value)
     .replace(/^[\s>*#`_-]*(?:\d+[.)]\s*)?/, "")
     .trim();
   if (!text) return "";
+  if (
+    /^The available evidence shows\b/i.test(text) ||
+    /\b(?:cannot determine|remains? uncertain|is uncertain|are uncertain)\b/i.test(text)
+  ) {
+    return /[.!?]$/.test(text) ? text : `${text}.`;
+  }
   const completePredicate = /\b(?:is|are|was|were|has|have|had|may|might|can|could|should|will|would|remains?|appears?|suggests?|supports?|indicates?|shows?|confirms?|requires?|recommends?|documents?|identifies?|raises?|increases?|decreases?|improved|worsened|persisted|resolved|grew|tested|received|underwent|developed)\b/i.test(text);
   const statement = completePredicate
-    ? text
-    : `The available evidence documents ${lowercaseFirst(text)}`;
+    ? `The available evidence shows that ${lowercaseFirst(text.replace(/[.!?]+$/, ""))}`
+    : `The available evidence shows ${lowercaseFirst(text.replace(/[.!?]+$/, ""))}`;
   return /[.!?]$/.test(statement) ? statement : `${statement}.`;
 }
 

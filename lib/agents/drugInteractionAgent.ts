@@ -7,6 +7,7 @@ import {
   defaultWarnings,
   groundedFactsFromChunks,
   hasConcreteContent,
+  normalizedReasoningInput,
   pickSentences,
   type FallbackObserver,
 } from "@/lib/agents/shared";
@@ -35,7 +36,10 @@ export async function runDrugInteractionAgent({
 
   return runStructuredGeneration<DrugInteractionAgentOutput>({
     system: getAgentPrompt("drug-interaction"),
-    user: JSON.stringify({ question, chunks: sourceChunks.slice(0, 6) }),
+    user: JSON.stringify({
+      question,
+      normalizedEvidence: normalizedReasoningInput(sourceChunks.slice(0, 6)),
+    }),
     schema: drugInteractionOutputSchema,
     schemaName: "drug_interaction_output",
     qualityCheck: (output) => output.findings.length > 0 && hasConcreteContent(output),

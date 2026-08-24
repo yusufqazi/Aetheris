@@ -830,6 +830,43 @@ describe("investigation summary model", () => {
     expect(finding?.citationIds[0]).toBe(finding?.relationships[0].citationId);
     expect(finding?.relationships.some((relationship) => relationship.exactQuote === weak)).toBe(true);
   });
+
+  it("never presents a flattened source row as a user-facing finding", () => {
+    const session = makeDemoSession();
+    const raw =
+      "Patient Elena Marisol Vega MRN SYN-774219 Study CT chest with contrast Study Date 2026-07-29 " +
+      "Region Finding Right upper-lobe mass decreased from 4.6 cm to 2.9 cm Mediastinal lymph nodes decreased " +
+      "New lung finding Patchy ground-glass opacity Pleural effusion None Distant disease No new metastatic lesion " +
+      "Partial radiographic response of the primary tumor and mediastinal adenopathy.";
+    session.question = "Summarize the efficacy, safety findings, and limitations of this treatment.";
+    session.documents[0] = {
+      ...session.documents[0],
+      text: raw,
+      pages: [{ number: 1, text: raw, startOffset: 0, endOffset: raw.length }],
+    };
+    const fact = makeFact(session, 0, "finding", raw, "evidence:flattened-row");
+    session.evidence = [makeEvidence(fact, 0)];
+    session.results = {
+      ...session.results!,
+      groundedFacts: [fact],
+      citations: undefined,
+      reportGeneration: {
+        ...session.results!.reportGeneration,
+        citations: undefined,
+        recommendedFollowUpQuestions: [],
+        researchIntelligence: undefined,
+      },
+    };
+
+    const findings = buildInvestigationData(session).findings;
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].statement).toBe(
+      "The available evidence shows a partial radiographic response of the primary tumor and mediastinal adenopathy.",
+    );
+    expect(findings[0].statement).not.toMatch(/Elena|Vega|MRN|Study Date|Region Finding|Pleural effusion None/i);
+    expect(findings[0].theme).not.toMatch(/Elena|Vega|MRN/i);
+  });
 });
 
 function makeScopedMultiStudySession(): ResearchSession {

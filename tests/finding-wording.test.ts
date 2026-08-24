@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { polishGeneratedFinding } from "@/lib/research/finding-wording";
+import {
+  generatedFindingQualityIssues,
+  polishGeneratedFinding,
+} from "@/lib/research/finding-wording";
 
 describe("polishGeneratedFinding", () => {
   it("preserves an already complete synthesized finding", () => {
@@ -49,5 +52,25 @@ describe("polishGeneratedFinding", () => {
     ).toBe(
       "The evidence documents severe systolic heart failure with an ejection fraction of 20%.",
     );
+  });
+
+  it("reduces a flattened metadata row to its clinical conclusion", () => {
+    const raw =
+      "The evidence documents patient Elena Marisol Vega MRN SYN-774219 study CT chest with contrast " +
+      "study Date 2026-07-29 Region Finding Right upper-lobe mass decreased from 4.6 cm to 2.9 cm " +
+      "Mediastinal lymph nodes decreased New lung finding Patchy ground-glass opacity Pleural effusion None " +
+      "Distant disease No new metastatic lesion Partial radiographic response of the primary tumor and mediastinal adenopathy.";
+
+    expect(generatedFindingQualityIssues(raw)).toContain("source-text-leakage");
+    expect(polishGeneratedFinding(raw)).toBe(
+      "The available evidence shows a partial radiographic response of the primary tumor and mediastinal adenopathy.",
+    );
+  });
+
+  it("does not reject a clear longitudinal finding merely because it includes a date", () => {
+    const finding = "At follow-up on 2026-07-29, the lesion decreased from 4.6 cm to 2.9 cm.";
+
+    expect(generatedFindingQualityIssues(finding)).toEqual([]);
+    expect(polishGeneratedFinding(finding)).toBe(finding);
   });
 });

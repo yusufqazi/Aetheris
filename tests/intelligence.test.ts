@@ -50,6 +50,26 @@ describe("research intelligence grounding", () => {
     );
   });
 
+  it("rejects generated primary answers that leak source metadata", () => {
+    const intelligence = makeIntelligence();
+    intelligence.directAnswer =
+      "Patient Elena Marisol Vega MRN SYN-774219 Study Date 2026-07-29 Region Finding QTc improved after treatment.";
+
+    expect(researchIntelligenceGroundingIssues(intelligence, evidence)).toContain(
+      "direct-answer-source-text-leakage",
+    );
+  });
+
+  it("rejects generated findings that contain flattened source metadata", () => {
+    const intelligence = makeIntelligence();
+    intelligence.structuredClaims![0].conclusion =
+      "Patient Elena Marisol Vega MRN SYN-774219 Study Date 2026-07-29 Region Finding QTc improved after treatment.";
+
+    expect(researchIntelligenceGroundingIssues(intelligence, evidence)).toContain(
+      "finding-output-malformed",
+    );
+  });
+
   it("drops model-generated conflicts between unrelated recommendations", () => {
     const secondEvidence: EvidenceItem = {
       ...evidence[0],

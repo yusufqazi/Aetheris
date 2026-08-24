@@ -6,7 +6,8 @@ import { runLiteratureSearchAgent } from "@/lib/agents/literatureSearchAgent";
 import { runReportAgent } from "@/lib/agents/reportAgent";
 import { runTrialSummarizerAgent } from "@/lib/agents/trialSummarizerAgent";
 import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
-import { extractGroundedFacts } from "@/lib/research/grounding";
+import { normalizeEvidenceItems } from "@/lib/research/evidence-normalization";
+import { extractGroundedFactsFromNormalizedEvidence } from "@/lib/research/normalized-grounding";
 import type { AgentId, AnalysisBundle, UploadedDocument } from "@/lib/types";
 
 export async function runMultiAgentAnalysis({
@@ -20,7 +21,12 @@ export async function runMultiAgentAnalysis({
 }) {
   const chunks = await retrieveRelevantChunks(documents, question, 10);
   const evidence = chunksToEvidence(chunks, "Ranked against the active research question.");
-  const facts = extractGroundedFacts(evidence, question);
+  const normalizedEvidence = normalizeEvidenceItems(evidence);
+  const facts = extractGroundedFactsFromNormalizedEvidence(
+    normalizedEvidence,
+    evidence,
+    question,
+  );
 
   const literatureSearch = selectedAgents.includes("literature-search")
     ? await runLiteratureSearchAgent({ question, chunks })
@@ -101,6 +107,7 @@ export async function runMultiAgentAnalysis({
         debate: debateConsensus,
         facts,
         evidence,
+        normalizedEvidence,
       })
     : {
         agentName: "Report Generation Agent",

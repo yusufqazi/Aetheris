@@ -335,6 +335,108 @@ describe("research content normalization", () => {
     expect(answer).toMatch(/diagnosis or cause.*treatment priority.*cannot be determined/i);
     expect(answer).not.toMatch(/document summarizes|measure result|value status|metadata/i);
   });
+
+  it("keeps flattened patient and imaging metadata out of a low-context primary answer", () => {
+    const facts: GroundedFact[] = [
+      {
+        id: "fact:imaging:response",
+        text: "Patient Elena Marisol Vega MRN SYN-774219 Study CT chest with contrast Study Date 2026-07-29 Region Finding Right upper-lobe mass Decreased from 4; 6 cm to 2.9 cm Mediastinal lymph nodes Station 4R node decreased from 2; 1 cm to 1.2 cm New lung finding Patchy peripheral ground-glass opacity in the right upper and middle lobes Pleural effusion None Distant disease No new metastatic lesion in the imaged chest Partial radiographic response of the primary tumor and mediastinal adenopathy.",
+        contentType: "finding",
+        category: "efficacy",
+        evidenceId: "evidence:imaging:response",
+        documentId: "document:imaging",
+        documentName: "04 Restaging Imaging Report.pdf",
+        page: 1,
+        excerpt: "Patient Elena Marisol Vega MRN SYN-774219 Study CT chest with contrast Study Date 2026-07-29 Region Finding Right upper-lobe mass Decreased from 4; 6 cm to 2.9 cm Partial radiographic response of the primary tumor and mediastinal adenopathy.",
+        relevance: "Documents treatment response.",
+      },
+      {
+        id: "fact:imaging:limitation",
+        text: "Synthetic Restaging Imaging Report synthesis, contradiction detection, and longitudinal reasoning Imaging alone cannot determine whether the opacity is inflammatory or infectious.",
+        contentType: "limitation",
+        category: "study-design",
+        evidenceId: "evidence:imaging:limitation",
+        documentId: "document:imaging",
+        documentName: "04 Restaging Imaging Report.pdf",
+        page: 1,
+        excerpt: "Synthetic Restaging Imaging Report synthesis, contradiction detection, and longitudinal reasoning Imaging alone cannot determine whether the opacity is inflammatory or infectious.",
+        relevance: "Documents an imaging limitation.",
+      },
+    ];
+
+    const answer = buildBestSupportedAnswer(
+      "Summarize the efficacy, safety findings, and limitations of this treatment.",
+      facts,
+    );
+
+    expect(answer).toMatch(/partial radiographic response/i);
+    expect(answer).toMatch(/imaging alone cannot determine/i);
+    expect(answer).toMatch(/safety profile.*cannot be determined/i);
+    expect(answer).not.toMatch(/Elena|Vega|MRN|2026-07-29|Region Finding|Synthetic|Restaging Imaging Report/i);
+  });
+
+  it("builds a constrained one-document safety-memo answer without metadata or workflow language", () => {
+    const documentId = "document:safety-memo";
+    const makeMemoFact = (
+      id: string,
+      text: string,
+      contentType: GroundedFact["contentType"],
+      category: GroundedFact["category"],
+    ): GroundedFact => ({
+      id,
+      text,
+      contentType,
+      category,
+      evidenceId: `evidence:${id}`,
+      documentId,
+      documentName: "03 Independent Safety Monitoring Committee Memorandum.pdf",
+      page: 1,
+      excerpt: text,
+      relevance: "Relevant to the one-document safety assessment.",
+    });
+    const facts: GroundedFact[] = [
+      makeMemoFact(
+        "fact:workflow",
+        "Independent Safety Monitoring Committee Memorandum detection, longitudinal reasoning, and source citation.",
+        "finding",
+        "context",
+      ),
+      makeMemoFact(
+        "fact:dose",
+        "The current 80 mg starting regimen is not supported in older adults.",
+        "safety_observation",
+        "safety",
+      ),
+      makeMemoFact(
+        "fact:precautions",
+        "Stronger fall-risk precautions and a protocol amendment are recommended.",
+        "recommendation",
+        "safety",
+      ),
+      makeMemoFact(
+        "fact:limitations",
+        "Broader limitations require additional study data before conclusions can be generalized.",
+        "limitation",
+        "limitation",
+      ),
+    ];
+
+    const answer = buildBestSupportedAnswer(
+      "Summarize the efficacy, safety findings, and limitations of this treatment.",
+      facts,
+    );
+    const sentenceCount = answer.match(/[^.!?]+[.!?]/g)?.length ?? 0;
+
+    expect(sentenceCount).toBeGreaterThanOrEqual(2);
+    expect(sentenceCount).toBeLessThanOrEqual(4);
+    expect(answer).toMatch(/80 mg starting regimen is not supported in older adults/i);
+    expect(answer).toMatch(/fall-risk precautions|protocol amendment/i);
+    expect(answer).toMatch(/efficacy.*cannot be determined/i);
+    expect(answer).toMatch(/additional study data/i);
+    expect(answer).not.toMatch(
+      /MRN|Patient|Study Date|Synthetic|Memorandum|detection|longitudinal reasoning|source citation|\.pdf/i,
+    );
+  });
 });
 
 function evidence(excerpt: string): EvidenceItem {
