@@ -71,6 +71,30 @@ test("demo report stays concise while preserving export and source inspection", 
   await expect(page.getByText("Interaction extraction", { exact: true })).toBeVisible();
 });
 
+test("results stay within common laptop viewports", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "Laptop viewport checks run in the desktop browser.");
+  const session = makeDemoSession();
+  await page.addInitScript((prepared) => {
+    window.localStorage.setItem("aetheris-sessions", JSON.stringify([prepared]));
+  }, session);
+
+  for (const viewport of [
+    { width: 1366, height: 768 },
+    { width: 1512, height: 982 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto(`/research/${session.id}`);
+    await expect(page.getByText("Primary answer", { exact: true })).toBeVisible();
+    const overflow = await page.evaluate(() => ({
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
+    }));
+    expect(overflow.documentWidth).toBeLessThanOrEqual(overflow.viewportWidth);
+    await expect(page.getByRole("button", { name: "Copy", exact: true })).toBeInViewport();
+    await expect(page.getByRole("button", { name: "PDF", exact: true })).toBeInViewport();
+  }
+});
+
 test("guest research is not retained after a full reload", async ({ page }) => {
   await page.goto("/dashboard");
   await page.getByRole("button", { name: /Explore demo session/ }).click();
@@ -134,7 +158,7 @@ test("balanced findings, conflicts, and open questions remain readable", async (
 
   const ferritin = page.locator("details:visible").filter({ hasText: /Will ferritin normalize with oral therapy alone\?/ }).last();
   await ferritin.locator("summary").click();
-  await expect(ferritin.getByText(/Ferritin increased from 6 ng\/mL to 14 ng\/mL/)).toBeVisible();
+  await expect(ferritin.getByText(/Follow-up ferritin.*14 ng\/mL.*remains low/i)).toBeVisible();
   await expect(ferritin.getByText(/palpitations|QTc/i)).toHaveCount(0);
   await ferritin.getByRole("button", { name: /Open 2 evidence excerpts/ }).click();
   const inspector = page.locator('[data-testid="evidence-inspector"]:visible');

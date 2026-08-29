@@ -96,9 +96,12 @@ export async function fetchSessionsFromSupabase(accessToken?: string | null) {
     .select("*")
     .order("created_at", { ascending: false })
     .limit(20);
-  const { data } = handleSessionsTableResult(result);
+  const handled = handleSessionsTableResult(result);
+  if (handled.error) {
+    throw handled.error;
+  }
 
-  return (data ?? []).map(mapSessionRow);
+  return (handled.data ?? []).map(mapSessionRow);
 }
 
 export async function fetchSessionByIdFromSupabase(id: string, accessToken?: string | null) {

@@ -14,6 +14,7 @@ export function extractGroundedFactsFromNormalizedEvidence(
   question: string,
 ) {
   const sourceById = new Map(sourceEvidence.map((item) => [item.id, item]));
+  const sectionById = new Map(normalized.sections.map((section) => [section.id, section.heading]));
   const facts: GroundedFact[] = [];
 
   for (const object of normalized.objects) {
@@ -29,7 +30,11 @@ export function extractGroundedFactsFromNormalizedEvidence(
     const extracted = extractGroundedFacts([normalizedEvidence], question);
 
     if (extracted.length === 0) {
-      facts.push(factFromNormalizedObject(object, source));
+      facts.push(factFromNormalizedObject(
+        object,
+        source,
+        object.sectionId ? sectionById.get(object.sectionId) : undefined,
+      ));
       continue;
     }
     for (const fact of extracted) {
@@ -41,6 +46,7 @@ export function extractGroundedFactsFromNormalizedEvidence(
         evidenceId: source.id,
         documentId: source.documentId,
         documentName: source.documentName,
+        sourceSection: object.sectionId ? sectionById.get(object.sectionId) : undefined,
         page: source.page,
         excerpt: object.sourceExcerpt || source.excerpt,
       });
@@ -53,6 +59,7 @@ export function extractGroundedFactsFromNormalizedEvidence(
 function factFromNormalizedObject(
   object: NormalizedEvidenceObject,
   source: EvidenceItem,
+  sourceSection?: string,
 ): GroundedFact {
   return {
     id: `fact:${object.id}`,
@@ -62,6 +69,7 @@ function factFromNormalizedObject(
     evidenceId: source.id,
     documentId: source.documentId,
     documentName: source.documentName,
+    sourceSection,
     page: source.page,
     excerpt: object.sourceExcerpt || source.excerpt,
     relevance: relevanceForNormalizedObject(object),
@@ -72,9 +80,9 @@ function contentTypeForNormalizedObject(
   object: NormalizedEvidenceObject,
   fallback: ResearchContentType,
 ): ResearchContentType {
-  if (fallback !== "finding" && fallback !== "evidence_excerpt") return fallback;
   if (object.kind === "recommendation") return "recommendation";
   if (object.kind === "uncertainty" || object.kind === "limitation") return "limitation";
+  if (fallback !== "finding" && fallback !== "evidence_excerpt") return fallback;
   return fallback === "evidence_excerpt" ? "finding" : fallback;
 }
 

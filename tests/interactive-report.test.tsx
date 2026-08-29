@@ -3,16 +3,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   InteractiveReport,
+  primaryAnswerCitationTargets,
   selectStrongestEvidenceItems,
 } from "@/components/workspace/report/InteractiveReport";
 import { CitationLinks } from "@/components/workspace/report/CitationLinks";
 import { makeDemoSession } from "@/lib/demo-data";
 import { getSessionCitations } from "@/lib/research/evidence-spans";
+import { semanticTopics } from "@/lib/research/evidence-relationships";
 import { buildInvestigationData } from "@/lib/research/investigation";
 
 const workspace = vi.hoisted(() => ({
   selectInspector: vi.fn(),
   setMobileInspectorOpen: vi.fn(),
+  startAnalysis: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/components/workspace/WorkspaceProvider", () => ({
@@ -23,6 +26,7 @@ describe("interactive report", () => {
   beforeEach(() => {
     workspace.selectInspector.mockClear();
     workspace.setMobileInspectorOpen.mockClear();
+    workspace.startAnalysis.mockClear();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -96,6 +100,63 @@ describe("interactive report", () => {
     expect(copied).not.toMatch(/\b\d+% (?:confidence|support)/i);
   });
 
+  it("shows a clean clipboard error when browser permission blocks copying", async () => {
+    vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error("NotAllowedError"));
+    render(<InteractiveReport session={makeDemoSession()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/clipboard permission/i);
+  });
+
+  it("downloads the rendered PDF through the report API", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true,
+      blob: vi.fn().mockResolvedValue({ type: "application/pdf" } as Blob),
+    } as unknown as Response);
+    const createObjectUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:aetheris-report");
+    const revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    render(<InteractiveReport session={makeDemoSession()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "PDF" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/reports/pdf", expect.objectContaining({ method: "POST" })));
+    await waitFor(() => expect(anchorClick).toHaveBeenCalledOnce());
+    expect(createObjectUrl).toHaveBeenCalledOnce();
+    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:aetheris-report");
+
+    fetchMock.mockRestore();
+    createObjectUrl.mockRestore();
+    revokeObjectUrl.mockRestore();
+    anchorClick.mockRestore();
+  });
+
+  it("explains model fallback without exposing provider errors and allows retry", async () => {
+    const session = makeDemoSession();
+    session.events.push({
+      id: "event:model-fallback",
+      version: 1,
+      sessionId: session.id,
+      sequence: Math.max(0, ...session.events.map((event) => event.sequence)) + 1,
+      timestamp: new Date().toISOString(),
+      type: "analysis.mode",
+      phase: "analyzing",
+      message: "Aetheris switched to local fallback mode",
+      data: {
+        mode: "demo",
+        reason: "429 RESOURCE_EXHAUSTED: provider quota exceeded with internal request details",
+      },
+    });
+
+    render(<InteractiveReport session={session} />);
+
+    expect(screen.getByLabelText("Model analysis status")).toHaveTextContent(/completed with local source-grounded processing/i);
+    expect(screen.queryByText(/RESOURCE_EXHAUSTED|internal request details/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry model analysis" }));
+    await waitFor(() => expect(workspace.startAnalysis).toHaveBeenCalledWith(session, { retry: true }));
+  });
+
   it("opens the existing source inspector from a human-readable citation", () => {
     const session = makeDemoSession();
     render(<InteractiveReport session={session} />);
@@ -112,6 +173,23 @@ describe("interactive report", () => {
     const selection = workspace.selectInspector.mock.calls[0][0];
     expect(session.evidence.some((item) => item.id === selection.evidenceId)).toBe(true);
     expect(workspace.setMobileInspectorOpen).toHaveBeenCalledWith(true);
+  });
+
+  it("maps each primary-answer source to the specific finding it supports", () => {
+    const session = makeDemoSession();
+    const investigation = buildInvestigationData(session);
+    const targets = primaryAnswerCitationTargets(investigation);
+
+    expect(targets.length).toBeGreaterThan(0);
+    expect(targets.every((target) =>
+      investigation.findings.some((finding) => finding.statement === target.claim),
+    )).toBe(true);
+    expect(targets.every((target) => target.claim !== investigation.directAnswer)).toBe(true);
+    expect(targets.every((target) => {
+      const answerTopics = new Set(semanticTopics(investigation.directAnswer));
+      const claimTopics = semanticTopics(target.claim);
+      return claimTopics.filter((topic) => answerTopics.has(topic)).length >= 2;
+    })).toBe(true);
   });
 
   it("groups distinct excerpts from the same source page into one citation control", () => {

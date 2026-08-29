@@ -21,6 +21,7 @@ import {
 import { assessEvidenceConfidence } from "@/lib/research/confidence";
 import {
   containsPrimaryAnswerSourceLeakage,
+  primaryAnswerQualityIssues,
   polishPrimaryAnswerFluency,
 } from "@/lib/research/primary-answer";
 import { createClinicalFindingTitle } from "@/lib/research/finding-titles";
@@ -33,10 +34,15 @@ import {
   buildBestSupportedAnswer,
   isClinicallyMaterialRecommendation,
   isIncompletePrimaryAnswer,
+  primaryAnswerConsistencyIssues,
+  primaryAnswerCoverageIssues,
 } from "@/lib/research/grounding";
 import {
+  classifyStatementRole,
+  isNeutralPositionStatement,
+  recommendationConflictKind,
+  recommendationsMateriallyConflict,
   sameClinicalQuestion,
-  sameManagementTarget,
   sameOutcomeQuestion,
 } from "@/lib/research/conflict-semantics";
 import {
@@ -44,9 +50,18 @@ import {
   isClinicallyImportantUncertainty,
   isGenericOpenQuestion,
   isOpenQuestionAnswered,
+  isOpenQuestionEvidenceCompatible,
   openQuestionFromGap,
+  openQuestionsFromGap,
   openQuestionImpact,
+  openQuestionQualityIssues,
 } from "@/lib/research/open-questions";
+import {
+  claimEvidenceAlignmentIssues,
+  isHistoricalContext,
+  isMetadataOnly,
+  proseQualityIssues,
+} from "@/lib/research/semantic-quality";
 
 export type SupportLabel =
   | "Strongly supported"
@@ -144,8 +159,7 @@ export function buildInvestigationData(session: ResearchSession): InvestigationD
       statement: claim.conclusion,
       providedTitle: claim.theme,
       dimension: claim.dimension,
-    }))
-    .filter((theme): theme is string => Boolean(theme)) ?? [];
+    })) ?? [];
   const requestedThemes = generatedThemes.length > 0
     ? Array.from(new Set(generatedThemes))
     : requestedFindingThemes(session.question);
@@ -175,7 +189,6 @@ export function buildInvestigationData(session: ResearchSession): InvestigationD
   const factFindings = createInvestigationFindings(findingFacts, citations, session, focus);
   const selectedFindings = selectQuestionScopedFindings(
     mergeInvestigationFindings([...claimFindings, ...factFindings]),
-    requestedThemes,
   );
   const findings = selectedFindings
     .map((finding) => {
@@ -191,7 +204,9 @@ export function buildInvestigationData(session: ResearchSession): InvestigationD
         }),
       };
     })
-    .filter((finding) => isGeneratedFindingReviewable(finding.statement));
+    .filter((finding) =>
+      finding.citationIds.length > 0 && isGeneratedFindingReviewable(finding.statement)
+    );
   const conflicts = uniqueConflicts([
     ...buildCrossDocumentConflicts(facts, citations),
     ...conflictFacts.map((fact) => conflictFromFact(fact, citations, facts)),
@@ -227,13 +242,20 @@ export function buildInvestigationData(session: ResearchSession): InvestigationD
       .map((id) => citations.find((citation) => citation.id === id)?.documentId)
       .filter(Boolean),
   ).size;
-  const support = primarySupport(findings, conflicts, citedDocumentCount);
-  const strongestCitationIds = strongestCrossDocumentCitationIds(findings, citations, requestedThemes);
   const directAnswer = normalizeDirectAnswer(
     intelligence?.directAnswer.trim() || report?.executiveSummary || "The uploaded evidence did not produce a direct answer.",
     facts,
     session.question,
   );
+  const support = primarySupport(
+    directAnswer,
+    session.question,
+    facts,
+    findings,
+    conflicts,
+    citedDocumentCount,
+  );
+  const strongestCitationIds = strongestCrossDocumentCitationIds(findings, citations, requestedThemes);
 
   return {
     directAnswer,
@@ -296,7 +318,7 @@ function findingFromStructuredClaim(
     counterEvidenceCount: claim.counterEvidenceIds.length,
     includeLimitationsAsSupport: true,
   });
-  const combined = claimFacts.map((fact) => `${fact.text} ${fact.excerpt}`).join(" ");
+  const combined = claimFacts.map((fact) => `${fact.documentName} ${fact.text} ${fact.excerpt}`).join(" ");
   const priorityScore = findingPriorityScore(
     `${claim.conclusion} ${combined}`,
     sourceCount,
@@ -335,10 +357,15 @@ function createInvestigationFindings(
   session: ResearchSession,
   focus: ReturnType<typeof questionFocus>,
 ) {
-  const eligibleFacts = facts.filter((fact) =>
+  const reviewableFacts = facts.filter((fact) =>
+    !isNeutralPositionStatement(fact.text) &&
     !appearsIncompleteSourceText(fact.text, fact.excerpt) &&
     isReviewableFindingStatement(polishFindingStatement(fact.text, fact.excerpt)),
   );
+  const currentFacts = reviewableFacts.filter((fact) =>
+    !isHistoricalContext(`${fact.documentName} ${fact.text} ${fact.excerpt}`)
+  );
+  const eligibleFacts = currentFacts.length >= 5 ? currentFacts : reviewableFacts;
   const groups = groupFactsByMeaning(eligibleFacts);
   const findings = uniqueFindingsByConclusion(groups.map((group) => findingFromFacts(group, citations, session, focus)))
     .sort((left, right) => right.priorityScore - left.priorityScore);
@@ -384,7 +411,6 @@ function mergeInvestigationFindings(findings: InvestigationFinding[]) {
 
 function selectQuestionScopedFindings(
   findings: InvestigationFinding[],
-  requestedThemes: FindingTheme[],
 ) {
   const reviewableFindings = findings
     .filter((finding) => isReviewableFindingStatement(finding.statement))
@@ -413,7 +439,7 @@ function selectQuestionScopedFindings(
     ...finding,
     priority: index === 0
       ? "Primary finding" as const
-      : requestedThemes.includes(finding.theme) || finding.priorityScore >= 5
+      : finding.priorityScore >= 5
         ? "Important finding" as const
         : "Supporting context" as const,
   }));
@@ -439,15 +465,18 @@ function findingFromFacts(
     documents: session.documents,
     aiMappings: session.results?.reportGeneration.researchIntelligence?.evidenceMappings,
   });
-  const linked = relationships.map((relationship) => relationship.citationId);
-  const sourceCount = new Set(relationships.map((relationship) => relationship.documentId)).size;
+  const relationshipCitationIds = relationships.map((relationship) => relationship.citationId);
+  const linked = relationshipCitationIds.length > 0 ? relationshipCitationIds : candidateCitationIds;
+  const sourceCount = new Set(linked
+    .map((citationId) => citations.find((citation) => citation.id === citationId)?.documentId)
+    .filter(Boolean)).size;
   const evidenceIds = new Set(relationships.map((relationship) => relationship.evidenceId));
   const confidence = assessEvidenceConfidence({
     facts,
     evidence: session.evidence.filter((item) => evidenceIds.has(item.id)),
     includeLimitationsAsSupport: true,
   });
-  const combined = facts.map((fact) => `${fact.text} ${fact.excerpt}`).join(" ");
+  const combined = facts.map((fact) => `${fact.documentName} ${fact.text} ${fact.excerpt}`).join(" ");
   const dimension = findingDimension(combined, facts);
   const priorityScore = findingPriorityScore(combined, sourceCount, linked.length, dimension, focus, primarySummary);
   return {
@@ -517,6 +546,8 @@ function findingPriorityScore(
   const clinicalOutcome = /\b(?:mortality|survival|response|remission|progress|worsen|improv|stabili[sz]|resolved|recur|adverse event|complication)\w*\b/i.test(text);
   const patientPreference = /\b(?:patient|family|caregiver)\b.{0,80}\b(?:prefer|preference|wish|wants?|request|declin|hesitan|comfortable|agreeable)\w*\b|\b(?:prefer|preference|wish|wants?|request)\w*\b.{0,80}\b(?:patient|family|caregiver)\b/i.test(text);
   const backgroundContext = /\b(?:background|history of|family history|social history|demographic|living situation|employment|marital status)\b/i.test(text);
+  const historicalContext = isHistoricalContext(text);
+  const neutralPosition = isNeutralPositionStatement(text);
   const sharedQuestionTopics = semanticTopics(text)
     .filter((topic) => focus.questionTopics.includes(topic)).length;
 
@@ -535,6 +566,8 @@ function findingPriorityScore(
   if (primarySummary) score += 1;
   if (dimension === "limitation" && !focus.limitations) score -= 2;
   if (backgroundContext) score -= 5;
+  if (historicalContext) score -= 12;
+  if (neutralPosition) score -= 10;
   if (patientPreference) score -= 8;
   return score;
 }
@@ -611,7 +644,7 @@ function conflictFromIntelligence(
   const documentNames = Array.from(new Set(sourceCitations.map((citation) => citation.documentName)));
   const positions = item.sourcePositions.slice(0, 4).map((statement, positionIndex) => {
     const matchedCitation = sourceCitations.find((citation) =>
-      areSemanticallyEquivalent(citation.exactQuote ?? citation.excerpt, statement),
+      citationSupportsPosition(citation, statement),
     );
     const documentName = matchedCitation?.documentName
       ?? documentNames[positionIndex]
@@ -621,7 +654,9 @@ function conflictFromIntelligence(
       documentName,
       statement,
       citationIds: sourceCitations
-        .filter((citation) => citation.documentName === documentName)
+        .filter((citation) =>
+          citation.documentName === documentName && citationSupportsPosition(citation, statement)
+        )
         .map((citation) => citation.id),
     };
   });
@@ -639,6 +674,8 @@ function conflictFromIntelligence(
 
 function buildCrossDocumentConflicts(facts: GroundedFact[], citations: Citation[]) {
   const candidates = facts.filter((fact) =>
+    !isNeutralPositionStatement(fact.text) &&
+    !isHistoricalContext(`${fact.documentName} ${fact.text} ${fact.excerpt}`) &&
     !["unresolved_question", "evidence_excerpt", "discrepancy", "longitudinal_change"].includes(normalizedContentType(fact)),
   );
   const conflicts: InvestigationConflict[] = [];
@@ -647,11 +684,14 @@ function buildCrossDocumentConflicts(facts: GroundedFact[], citations: Citation[
     for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
       const left = candidates[leftIndex];
       const right = candidates[rightIndex];
-      if (left.documentId === right.documentId) continue;
-      const comparison = compareConflictPair(left, right) ?? compareDecisionRiskTradeoff(left, right);
+      if (
+        left.documentId === right.documentId &&
+        (!left.sourceSection || !right.sourceSection || left.sourceSection === right.sourceSection)
+      ) continue;
+      const comparison = compareConflictPair(left, right);
       if (!comparison) continue;
       const positions = [left, right].map((fact) => ({
-        documentName: fact.documentName,
+        documentName: factSourceLabel(fact),
         statement: fact.text,
         citationIds: supportingCitationIds(fact, citations),
       }));
@@ -673,47 +713,21 @@ function buildCrossDocumentConflicts(facts: GroundedFact[], citations: Citation[
   return conflicts;
 }
 
-function compareDecisionRiskTradeoff(left: GroundedFact, right: GroundedFact) {
-  const leftText = `${left.text} ${left.excerpt}`;
-  const rightText = `${right.text} ${right.excerpt}`;
-  const leftRecommends = normalizedContentType(left) === "recommendation" || Boolean(recommendationAction(leftText));
-  const rightRecommends = normalizedContentType(right) === "recommendation" || Boolean(recommendationAction(rightText));
-  const leftConcern = isMaterialConcern(leftText);
-  const rightConcern = isMaterialConcern(rightText);
-
-  const action = leftRecommends && recommendationAction(leftText) === "proceed" && rightConcern
-    ? left
-    : rightRecommends && recommendationAction(rightText) === "proceed" && leftConcern
-      ? right
-      : null;
-  const concern = action === left ? right : action === right ? left : null;
-  if (!action || !concern || !sameManagementTarget(leftText, rightText)) return null;
-
-  return {
-    type: "Benefit-risk tension" as const,
-    statement: `${action.documentName} supports ${lowercaseLeading(polishFindingStatement(action.text))} By comparison, ${concern.documentName} documents ${lowercaseLeading(polishFindingStatement(concern.text))}`,
-    explanation: "The sources emphasize competing decision priorities: the proposed action may provide benefit or stabilization, while the documented risk may require a more cautious implementation or an alternative approach.",
-  };
-}
-
 function compareConflictPair(left: GroundedFact, right: GroundedFact) {
   const leftText = `${left.text} ${left.excerpt}`;
   const rightText = `${right.text} ${right.excerpt}`;
   const leftPolarity = evidencePolarity(leftText);
   const rightPolarity = evidencePolarity(rightText);
   const sourceRolesDiffer = sourceRole(left) !== sourceRole(right) && sourceRole(left) !== "other" && sourceRole(right) !== "other";
-  const leftAction = recommendationAction(leftText);
-  const rightAction = recommendationAction(rightText);
 
-  if (
-    sameManagementTarget(leftText, rightText) &&
-    ((leftAction && rightAction && recommendationActionsConflict(leftAction, rightAction)) ||
-      (recommendationStance(leftText) && recommendationStance(rightText) && recommendationStance(leftText) !== recommendationStance(rightText)))
-  ) {
+  if (recommendationsMateriallyConflict(leftText, rightText)) {
+    const kind = recommendationConflictKind(leftText, rightText);
     return {
       type: "Recommendation disagreement" as const,
       statement: `${left.documentName} states ${lowercaseLeading(polishFindingStatement(left.text))} In contrast, ${right.documentName} states ${lowercaseLeading(polishFindingStatement(right.text))}`,
-      explanation: "The recommended next step depends on which source context applies, so the two recommendations should not be combined into one instruction.",
+      explanation: kind === "timing-or-threshold"
+        ? "The recommended next step differs because the sources apply different timing thresholds, so their recommendations must remain separately attributed."
+        : "The recommended next step depends on which source context applies, so the two recommendations should not be combined into one instruction.",
     };
   }
   if (
@@ -732,39 +746,7 @@ function compareConflictPair(left: GroundedFact, right: GroundedFact) {
         : "The treatment effect is not consistent across the compared sources, so one result should not be presented as universally representative.",
     };
   }
-  if (sameManagementTarget(leftText, rightText)) {
-    const efficacy = isEfficacyFact(left) && leftPolarity === "positive" ? left
-      : isEfficacyFact(right) && rightPolarity === "positive" ? right
-        : null;
-    const safety = isSafetyFact(left) && leftPolarity === "negative" ? left
-      : isSafetyFact(right) && rightPolarity === "negative" ? right
-        : null;
-    if (efficacy && safety) {
-      return {
-        type: "Benefit-risk tension" as const,
-        statement: `${efficacy.documentName} reports efficacy improvement, while ${safety.documentName} documents a worsening or clinically relevant safety burden.`,
-        explanation: "The efficacy signal and safety burden must be interpreted together; improvement on an outcome does not establish that the overall benefit-risk profile is favorable.",
-      };
-    }
-
-    const proceeding = leftAction === "proceed" ? left : rightAction === "proceed" ? right : null;
-    const concern = proceeding === left && isMaterialConcern(rightText) ? right
-      : proceeding === right && isMaterialConcern(leftText) ? left
-        : null;
-    if (proceeding && concern) {
-      return {
-        type: "Benefit-risk tension" as const,
-        statement: `${proceeding.documentName} supports proceeding, while ${concern.documentName} documents ${lowercaseLeading(polishFindingStatement(concern.text))}`,
-        explanation: "The sources emphasize competing decision priorities: the expected benefit or urgency supports action, while the documented constraint may change how, when, or whether that action is undertaken.",
-      };
-    }
-
-  }
   return null;
-}
-
-function isMaterialConcern(text: string) {
-  return /\b(?:risk|hazard|contraindicat\w*|unsafe|complications?|worsen\w*|deteriorat\w*|overload|edema|toxicity|bleed(?:ing)?|arrhythmia|adverse event|infeasible|technically difficult|high technical risk|safety concern)\b/i.test(text);
 }
 
 function concreteConflictStatement(
@@ -818,6 +800,12 @@ function supportingCitationIds(fact: GroundedFact, citations: Citation[]) {
     ? claimSpecific
     : citationIdsForEvidence([fact.evidenceId], citations);
   return Array.from(new Set(direct));
+}
+
+function factSourceLabel(fact: GroundedFact) {
+  return fact.sourceSection
+    ? `${fact.documentName} (${fact.sourceSection})`
+    : fact.documentName;
 }
 
 function citationIdsForEvidence(evidenceIds: string[], citations: Citation[]) {
@@ -878,37 +866,8 @@ function evidencePolarity(text: string) {
   return null;
 }
 
-function recommendationStance(text: string) {
-  if (/not recommend|should not|avoid|contraindicat|do not use/i.test(text)) return "against" as const;
-  if (/recommend|should|support(?:s|ed)? use|consider/i.test(text)) return "for" as const;
-  return null;
-}
-
-type RecommendationAction = "proceed" | "delay" | "stop" | "restrict" | "monitor";
-
-function recommendationAction(text: string): RecommendationAction | null {
-  if (/\b(?:delay(?:ed|ing)?|defer(?:red|ring)?|postpone(?:d|ment)?|hold(?:ing)?|held|withhold(?:ing)?|withheld|wait before|not yet)\b/i.test(text)) return "delay";
-  if (/\b(?:stop(?:ped|ping)?|discontinu(?:e|ed|ing|ation)|cease(?:d)?|do not use|avoid(?:ed|ing)?|contraindicat|not recommend)\b/i.test(text)) return "stop";
-  if (/\b(?:restrict|lower starting dose|dose reduction|limited indication|conditional)\b/i.test(text)) return "restrict";
-  if (/\b(?:monitor|surveillance|repeat|recheck|follow-up testing)\b/i.test(text)) return "monitor";
-  if (/\b(?:start(?:ed|ing)?|initiat(?:e|ed|ing|ion)|begin|began|continue(?:d|ing)?|proceed(?:ed|ing)?|approve(?:d|s)?|recommend(?:s|ed)?|support(?:s|ed)? use)\b/i.test(text)) return "proceed";
-  return null;
-}
-
-function recommendationActionsConflict(left: RecommendationAction, right: RecommendationAction) {
-  if (left === right) return false;
-  return (
-    (left === "proceed" && ["delay", "stop", "restrict"].includes(right)) ||
-    (right === "proceed" && ["delay", "stop", "restrict"].includes(left)) ||
-    (left === "stop" && ["delay", "restrict"].includes(right)) ||
-    (right === "stop" && ["delay", "restrict"].includes(left))
-  );
-}
-
 function statementsOppose(left: string, right: string) {
-  const leftAction = recommendationAction(left);
-  const rightAction = recommendationAction(right);
-  if (leftAction && rightAction && recommendationActionsConflict(leftAction, rightAction)) return true;
+  if (recommendationsMateriallyConflict(left, right)) return true;
   const leftPolarity = evidencePolarity(left);
   const rightPolarity = evidencePolarity(right);
   return Boolean(leftPolarity && rightPolarity && leftPolarity !== rightPolarity);
@@ -927,18 +886,31 @@ function isEfficacyFact(fact: GroundedFact) {
   return fact.category === "efficacy" || fact.category === "statistical";
 }
 
-function isSafetyFact(fact: GroundedFact) {
-  return fact.category === "safety" || fact.category === "interaction" || normalizedContentType(fact) === "safety_observation";
-}
-
-function primarySupport(findings: InvestigationFinding[], conflicts: InvestigationConflict[], documentCount: number): SupportLabel {
+function primarySupport(
+  directAnswer: string,
+  question: string,
+  facts: GroundedFact[],
+  findings: InvestigationFinding[],
+  conflicts: InvestigationConflict[],
+  documentCount: number,
+): SupportLabel {
   if (findings.length === 0) return "Insufficient evidence";
+  if (
+    primaryAnswerCoverageIssues(directAnswer, question, facts).length > 0 ||
+    primaryAnswerConsistencyIssues(directAnswer, question, facts).length > 0
+  ) return "Insufficient evidence";
   if (conflicts.some((item) => [
     "Direct contradiction",
     "Outcome disagreement",
     "Recommendation disagreement",
     "Source disagreement",
   ].includes(item.type))) return "Conflicting evidence";
+  const coverage = assessPrimaryAnswerEvidence(question, facts);
+  if (coverage.evidenceLimited) {
+    return findings.some((item) => item.support === "Moderately supported" || item.support === "Strongly supported")
+      ? "Moderately supported"
+      : "Limited support";
+  }
   if (findings.some((item) => item.support === "Strongly supported") && documentCount >= 2) {
     return "Strongly supported";
   }
@@ -1039,7 +1011,40 @@ function isReviewableConflict(conflict: InvestigationConflict) {
     return false;
   }
   const positionDocuments = new Set(conflict.positions.map((position) => position.documentName));
-  return conflict.positions.length >= 2 && positionDocuments.size >= 2 && conflict.citationIds.length >= 2;
+  const hasGenuinePair = conflict.positions.some((left, index) =>
+    conflict.positions.slice(index + 1).some((right) =>
+      recommendationsMateriallyConflict(left.statement, right.statement) ||
+      (
+        sameOutcomeQuestion(left.statement, right.statement) &&
+        evidencePolarity(left.statement) !== null &&
+        evidencePolarity(right.statement) !== null &&
+        evidencePolarity(left.statement) !== evidencePolarity(right.statement)
+      )
+    )
+  );
+  const explicitDocumentationDiscrepancy = conflict.type === "Documentation discrepancy" &&
+    /\b(?:whereas|differs?|reported differently|documentation discrepancy)\b/i.test(conflict.statement);
+  return conflict.positions.length >= 2 &&
+    positionDocuments.size >= 2 &&
+    conflict.citationIds.length >= 2 &&
+    (hasGenuinePair || explicitDocumentationDiscrepancy);
+}
+
+function citationSupportsPosition(citation: Citation, statement: string) {
+  const source = citation.exactQuote ?? citation.excerpt;
+  if (claimEvidenceAlignmentIssues(statement, source).length > 0) return false;
+  const statementRole = classifyStatementRole(statement);
+  const sourceRole = classifyStatementRole(source);
+  if (
+    ["recommendation_for", "recommendation_against"].includes(statementRole) &&
+    statementRole !== sourceRole
+  ) {
+    return false;
+  }
+  const targetTopics = semanticTopics(statement);
+  const sourceTopics = semanticTopics(source);
+  return areSemanticallyEquivalent(source, statement) ||
+    targetTopics.filter((topic) => sourceTopics.includes(topic)).length >= 2;
 }
 
 function attachRelationships<T extends InvestigationConflict | InvestigationChange>(
@@ -1134,10 +1139,12 @@ function normalizeDirectAnswer(answer: string, facts: GroundedFact[], question: 
   const prematurelyIncomplete = isIncompletePrimaryAnswer(value) && hasSupportedSynthesis;
   if (
     !malformed &&
+    primaryAnswerQualityIssues(value).length === 0 &&
     !containsPrimaryAnswerSourceLeakage(value) &&
     !unsupportedCertainty &&
     !unsupportedEfficacyClaim &&
     !prematurelyIncomplete &&
+    directAnswerCoversQuestion(value, question, facts) &&
     value.length >= 40 &&
     /[.!?]$/.test(value)
   ) {
@@ -1150,6 +1157,11 @@ function normalizeDirectAnswer(answer: string, facts: GroundedFact[], question: 
   return polishPrimaryAnswerFluency(fallback
     ? `The strongest supported conclusion is that ${lowercaseLeading(fallback)} Remaining uncertainty should be interpreted separately from this established finding.`
     : "The uploaded documents do not contain enough complete, directly extractable evidence to answer the research question reliably.");
+}
+
+function directAnswerCoversQuestion(answer: string, question: string, facts: GroundedFact[]) {
+  return primaryAnswerCoverageIssues(answer, question, facts).length === 0 &&
+    primaryAnswerConsistencyIssues(answer, question, facts).length === 0;
 }
 
 function primaryUncertainty(session: ResearchSession, facts: GroundedFact[]) {
@@ -1180,6 +1192,14 @@ function uniqueFindingsByConclusion(items: InvestigationFinding[]) {
     if (!duplicate) {
       accepted.push(item);
       continue;
+    }
+
+    const duplicateHasMeasurement = /\b\d+(?:\.\d+)?\s*(?:%|L\/min|mg|mmHg|bpm|hours?|days?)\b/i.test(duplicate.statement);
+    const itemHasMeasurement = /\b\d+(?:\.\d+)?\s*(?:%|L\/min|mg|mmHg|bpm|hours?|days?)\b/i.test(item.statement);
+    if (itemHasMeasurement && !duplicateHasMeasurement) {
+      duplicate.statement = item.statement;
+      duplicate.theme = item.theme;
+      duplicate.dimension = item.dimension;
     }
 
     duplicate.relationships = rankEvidenceRelationships(
@@ -1270,10 +1290,14 @@ function conflictEvidenceScore(conflict: InvestigationConflict) {
     (position.statement.match(/\b\d+(?:\.\d+)?%?\b/g)?.length ?? 0) +
     (/\b(?:diagnos|recommend|risk|benefit|worsen|improv|contraindicat|delay|defer|proceed|start|stop)\w*\b/i.test(position.statement) ? 1 : 0),
   0);
+  const summaryPenalty = conflict.documentNames.some((name) =>
+    /\b(?:multidisciplinary|case summary|summary|synthesis)\b/i.test(name)
+  ) ? 12 : 0;
   return citedSides * 20 +
     Math.min(conflict.citationIds.length, 4) * 4 +
     concreteDetails * 2 +
-    Math.min(conflict.statement.length, 320) / 80;
+    Math.min(conflict.statement.length, 320) / 80 -
+    summaryPenalty;
 }
 
 function sameConflictSide(left: string, right: string) {
@@ -1289,10 +1313,10 @@ function sameConflictSide(left: string, right: string) {
 }
 
 function conflictSide(text: string) {
-  const action = recommendationAction(text);
-  if (action === "proceed") return "supportive";
-  if (action && ["delay", "stop", "restrict"].includes(action)) return "cautionary";
-  if (isMaterialConcern(text)) return "cautionary";
+  const role = classifyStatementRole(text);
+  if (role === "recommendation_for") return "supportive";
+  if (role === "recommendation_against") return "cautionary";
+  if (role === "neutral" || role === "safety_information" || role === "uncertainty") return "neutral";
   const polarity = evidencePolarity(text);
   if (polarity) return polarity;
   if (/\b(?:benefit|support|stabili|favorable|effective)\w*\b/i.test(text)) {
@@ -1313,10 +1337,6 @@ function uniqueChanges(items: InvestigationChange[]) {
 
 function looksLongitudinal(value: string) {
   return /\b(?:improved|decreased|increased|follow-up|later|earlier|from\s+\d+.*to\s+\d+)\b/i.test(value);
-}
-
-function isQuestion(value: string) {
-  return /\?$/.test(value.trim()) || /^(?:whether|what|when|where|why|how|which|who|has|have|is|are|could|would|did|does|can)\b/i.test(value.trim());
 }
 
 function createOpenQuestions({
@@ -1343,7 +1363,9 @@ function createOpenQuestions({
   const seeds = [
     ...questionFacts.map((fact) => ({
       id: fact.id,
-      question: fact.text,
+      question: openQuestionQualityIssues(fact.text).length === 0
+        ? fact.text
+        : openQuestionFromGap(fact.text),
       known: "",
       whyItMatters: "",
       evidenceNeeded: "",
@@ -1352,20 +1374,16 @@ function createOpenQuestions({
     ...facts
       .filter((fact) =>
         ["limitation", "discrepancy"].includes(normalizedContentType(fact)) ||
-        isClinicallyImportantUncertainty(fact.text) ||
-        (
-          normalizedContentType(fact) === "recommendation" &&
-          /\b(?:until|uncertain|uncertainty|unresolved|restricted|lower starting dose|indication|dosing|dose)\b/i.test(fact.text)
-        ),
+        isClinicallyImportantUncertainty(fact.text),
       )
-      .map((fact) => ({
-        id: `gap-question:${fact.id}`,
-        question: openQuestionFromGap(fact.text),
+      .flatMap((fact) => openQuestionsFromGap(fact.text).map((question, index) => ({
+        id: `gap-question:${fact.id}:${index}`,
+        question,
         known: fact.text,
         whyItMatters: "",
         evidenceNeeded: "",
         evidenceIds: [fact.evidenceId],
-      })),
+      }))),
     ...intelligenceQuestions.map((item, index) => ({
       id: `intelligence-question:${index}`,
       question: item.unknown,
@@ -1374,7 +1392,7 @@ function createOpenQuestions({
       evidenceNeeded: item.evidenceNeeded,
       evidenceIds: item.evidenceIds ?? [],
     })),
-    ...reportQuestions.filter(isQuestion).map((question, index) => ({
+    ...reportQuestions.filter((question) => openQuestionQualityIssues(question).length === 0).map((question, index) => ({
       id: `report-question:${index}`,
       question,
       known: "",
@@ -1382,7 +1400,7 @@ function createOpenQuestions({
       evidenceNeeded: "",
       evidenceIds: [],
     })),
-  ];
+  ].filter((seed) => openQuestionQualityIssues(seed.question).length === 0);
   const merged = new Map<string, typeof seeds[number]>();
   for (const seed of seeds) {
     const family = questionFamily(seed.question);
@@ -1391,28 +1409,40 @@ function createOpenQuestions({
       merged.set(family, seed);
       continue;
     }
+    const preferred = questionSpecificity(seed.question) > questionSpecificity(existing.question)
+      ? seed
+      : existing;
     merged.set(family, {
-      ...existing,
-      known: existing.known || seed.known,
-      whyItMatters: existing.whyItMatters || seed.whyItMatters,
-      evidenceNeeded: existing.evidenceNeeded || seed.evidenceNeeded,
+      ...preferred,
+      known: preferred.known || existing.known || seed.known,
+      whyItMatters: preferred.whyItMatters || existing.whyItMatters || seed.whyItMatters,
+      evidenceNeeded: preferred.evidenceNeeded || existing.evidenceNeeded || seed.evidenceNeeded,
       evidenceIds: Array.from(new Set([...existing.evidenceIds, ...seed.evidenceIds])),
     });
   }
 
   const questions = Array.from(merged.entries()).flatMap(([family, seed]) => {
     const question = canonicalQuestion(family, seed.question);
-    if (isGenericOpenQuestion(question) || isOpenQuestionAnswered(question, facts)) return [];
+    if (
+      openQuestionQualityIssues(question).length > 0 ||
+      isGenericOpenQuestion(question) ||
+      isOpenQuestionAnswered(question, facts)
+    ) return [];
     const id = `question:${family}`;
-    const explicitlyLinkedFacts = facts.filter((fact) => seed.evidenceIds.includes(fact.evidenceId));
-    const candidateFacts = explicitlyLinkedFacts.length > 0
+    const explicitlyLinkedFacts = facts.filter((fact) =>
+      seed.evidenceIds.includes(fact.evidenceId) &&
+      normalizedContentType(fact) !== "unresolved_question",
+    );
+    const candidateFacts = (explicitlyLinkedFacts.length > 0
       ? explicitlyLinkedFacts
-      : relevantFactsForQuestion(question, facts);
+      : relevantFactsForQuestion(question, facts))
+      .filter((fact) => isOpenQuestionEvidenceCompatible(question, fact));
     const candidateEvidenceIds = candidateFacts.map((fact) => fact.evidenceId);
-    const known = specificOrSafe(seed.known, knownEvidenceForQuestion(candidateFacts));
+    const known = supportingTextOrFallback(seed.known, knownEvidenceForQuestion(candidateFacts));
+    const evidenceContext = candidateFacts.map((fact) => fact.text).join(" ");
     const relationships = buildEvidenceRelationships({
       targetItemId: id,
-      targetText: `${question} ${known}`,
+      targetText: `${question} ${evidenceContext || known}`,
       targetKind: "open_question",
       citations: citations.filter((citation) =>
         candidateEvidenceIds.includes(citation.evidenceId) || candidateEvidenceIds.includes(citation.chunkId),
@@ -1429,8 +1459,8 @@ function createOpenQuestions({
       ...directCitationIds,
     ]));
     if (evidenceFacts.length === 0 || citationIds.length === 0) return [];
-    const missingEvidence = specificOrSafe(seed.evidenceNeeded, evidenceNeededForOpenQuestion(question));
-    const whyItMatters = specificOrSafe(seed.whyItMatters, openQuestionImpact(question, evidenceFacts));
+    const missingEvidence = supportingTextOrFallback(seed.evidenceNeeded, evidenceNeededForOpenQuestion(question));
+    const whyItMatters = supportingTextOrFallback(seed.whyItMatters, openQuestionImpact(question, evidenceFacts));
     return [{
       id,
       question,
@@ -1449,8 +1479,11 @@ function uniqueOpenQuestions(questions: InvestigationQuestion[]) {
   const selected: InvestigationQuestion[] = [];
   for (const question of questions) {
     const duplicate = selected.find((candidate) =>
-      areSemanticallyEquivalent(candidate.question, question.question) ||
-      sharesSpecificPhrase(candidate.question, question.question),
+      questionFamily(candidate.question) === questionFamily(question.question) &&
+      (
+        areSemanticallyEquivalent(candidate.question, question.question) ||
+        sharesSpecificPhrase(candidate.question, question.question)
+      ),
     );
     if (!duplicate) {
       selected.push(question);
@@ -1462,6 +1495,14 @@ function uniqueOpenQuestions(questions: InvestigationQuestion[]) {
     ).values());
   }
   return selected;
+}
+
+function questionSpecificity(question: string) {
+  let score = 0;
+  if (/\b(?:pending|not yet|if .{1,80} (?:is|are) performed|final(?:ized)?)\b/i.test(question)) score += 3;
+  if (/\b(?:assay|biopsy|bronchoscop|culture|imaging|laboratory|measurement|quantification|test)\w*\b/i.test(question)) score += 2;
+  if (/\b(?:available workup|additional evidence|more information)\b/i.test(question)) score -= 2;
+  return score;
 }
 
 function sharesSpecificPhrase(left: string, right: string) {
@@ -1499,12 +1540,27 @@ function relevantFactsForQuestion(question: string, facts: GroundedFact[]) {
 }
 
 function questionFamily(question: string) {
+  const normalized = question.toLowerCase();
+  if (/\bblood loss\b/.test(normalized)) return "blood-loss-source";
+  if (/\b(?:blood|sputum|final)?\s*cultures?\b/.test(normalized)) return "microbiology-cultures";
+  if (/\b(?:bronchoalveolar lavage|\bBAL\b|bronchoscopy)\b/i.test(question)) return "bronchoscopy-bal";
+  if (/\b(?:oxygen requirement|respiratory status|respiratory trajectory)\b/.test(normalized)) return "respiratory-trajectory";
+  if (/\b(?:biopsy|histolog(?:y|ic)|tissue sampling)\b/.test(normalized)) return "tissue-sampling-result";
+  if (/\b(?:urine protein|proteinuria|protein quantification|protein-to-creatinine)\b/.test(normalized)) {
+    return "urine-protein-quantification";
+  }
+  if (/\b(?:renal|kidney) function\b.*\b(?:trend|trajectory|change|repeat)\b|\b(?:trend|trajectory|change|repeat)\b.*\b(?:renal|kidney) function\b/.test(normalized)) {
+    return "renal-function-trajectory";
+  }
   const family = semanticFamily(question);
   return family || question.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function canonicalQuestion(_family: string, fallback: string) {
-  return ensureQuestion(fallback);
+  return ensureQuestion(fallback).replace(
+    /^(Is|Are) (relative contribution|severity|cause|diagnosis|timing|extent|source|trajectory|status|response)\b/i,
+    "$1 the $2",
+  );
 }
 
 function factsForRelationships(
@@ -1521,19 +1577,35 @@ function factsForRelationships(
 function knownEvidenceForQuestion(facts: GroundedFact[]) {
   if (facts.length === 0) return "No directly related source observation was retrieved.";
 
-  const bestFact = facts.find((fact) =>
-    !appearsIncompleteSourceText(fact.text, fact.excerpt) &&
-    isReviewableFindingStatement(polishFindingStatement(fact.text, fact.excerpt)),
-  ) ?? facts[0];
+  const bestFact = [...facts]
+    .filter((fact) =>
+      !isMetadataOnly(`${fact.text} ${fact.excerpt}`) &&
+      !appearsIncompleteSourceText(fact.text, fact.excerpt) &&
+      isReviewableFindingStatement(polishFindingStatement(fact.text, fact.excerpt)),
+    )
+    .sort((left, right) => knownEvidenceScore(right) - knownEvidenceScore(left))[0] ?? facts[0];
   const polished = polishFindingStatement(bestFact.text, bestFact.excerpt);
   return appearsIncompleteSourceText(polished, bestFact.excerpt)
     ? `The closest source passage is in ${bestFact.documentName}, but it does not resolve the question.`
     : polished;
 }
 
-function specificOrSafe(candidate: string, fallback: string) {
+function knownEvidenceScore(fact: GroundedFact) {
+  const text = `${fact.text} ${fact.excerpt}`;
+  return Number(fact.contentType === "longitudinal_change") * 4 +
+    Number(/\bfollow-up|repeat|serial|after\s+\d+/i.test(text)) * 3 +
+    Number(/\bremain(?:s|ed)?|persist(?:s|ed)?|improv(?:e|ed)|worsen(?:s|ed)?\b/i.test(text)) * 2 -
+    Number(/^baseline\b/i.test(fact.text)) * 2;
+}
+
+function supportingTextOrFallback(candidate: string, fallback: string) {
   const value = candidate.trim();
-  if (!value || /source observation that directly|materially change the evidence-based conclusion|additional directly relevant source evidence|resolving this question could/i.test(value)) return fallback;
+  if (
+    !value ||
+    proseQualityIssues(value).length > 0 ||
+    /source observation that directly|materially change the evidence-based conclusion|additional directly relevant source evidence|resolving this question could/i.test(value) ||
+    ["recommendation_for", "recommendation_against", "neutral"].includes(classifyStatementRole(value))
+  ) return fallback;
   return value;
 }
 

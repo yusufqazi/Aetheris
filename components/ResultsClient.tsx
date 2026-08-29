@@ -7,6 +7,7 @@ import {
   Check,
   Circle,
   FileText,
+  LoaderCircle,
   RefreshCw,
   ShieldAlert,
 } from "lucide-react";
@@ -66,6 +67,7 @@ export function ResultsClient({ sessionId }: { sessionId: string }) {
     startAnalysis,
   } = useWorkspace();
   const session = sessions.find((item) => item.id === sessionId) ?? null;
+  const [isRetrying, setIsRetrying] = useState(false);
 
   useEffect(() => {
     setActiveSessionId(sessionId);
@@ -86,6 +88,16 @@ export function ResultsClient({ sessionId }: { sessionId: string }) {
         <InteractiveReport session={session} />
       </div>
     );
+  }
+
+  async function retryAnalysis() {
+    if (!session || isRetrying) return;
+    setIsRetrying(true);
+    try {
+      await startAnalysis(session, { retry: true });
+    } finally {
+      setIsRetrying(false);
+    }
   }
 
   return (
@@ -117,7 +129,7 @@ export function ResultsClient({ sessionId }: { sessionId: string }) {
       <ModeNotice session={session} />
 
       {session.status === "error" ? (
-        <ResearchErrorState session={session} onRetry={() => void startAnalysis(session, { retry: true })} />
+        <ResearchErrorState session={session} onRetry={retryAnalysis} retrying={isRetrying} />
       ) : (
         <AnalysisProgress session={session} />
       )}
@@ -161,10 +173,14 @@ function ModeNotice({ session }: { session: ResearchSession }) {
 function AnalysisProgress({ session }: { session: ResearchSession }) {
   const reduceMotion = useReducedMotion();
   const elapsedSeconds = useAnalysisElapsedSeconds(session);
-  const completeCount = SIMPLE_STAGES.filter((item) => groupStatus(session, item.stageIds) === "completed").length;
-  const progress = Math.round((completeCount / SIMPLE_STAGES.length) * 100);
+  const progress = Math.round(
+    SIMPLE_STAGES.reduce((sum, item) => sum + groupProgress(session, item.stageIds), 0) /
+      SIMPLE_STAGES.length,
+  );
   const runningAgents = Object.values(session.agentExecutions).filter((agent) => agent.status === "running");
   const completedAgents = Object.values(session.agentExecutions).filter((agent) => agent.status === "completed");
+  const activeGroup = SIMPLE_STAGES.find((item) => groupStatus(session, item.stageIds) === "running");
+  const activeStage = session.pipeline.find((stage) => stage.status === "running");
 
   return (
     <section className="mx-auto max-w-4xl py-14 sm:py-20">
@@ -213,18 +229,16 @@ function AnalysisProgress({ session }: { session: ResearchSession }) {
         />
       </div>
 
-      {runningAgents.length > 0 ? (
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 font-mono text-[9px] uppercase tracking-[0.13em] text-slate-600">
-          <span>
-            {session.mode === "live"
-              ? "Gemini is evaluating the retrieved evidence"
-              : "Local evidence review is running"}
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 font-mono text-[9px] uppercase tracking-[0.13em] text-slate-600" aria-live="polite">
+          <span className="inline-flex items-center gap-2">
+            <LoaderCircle className="h-3 w-3 animate-spin text-sky-300/70" />
+            {activeStage?.detail || activeGroup?.description ||
+              (session.mode === "live" ? "Gemini is evaluating the retrieved evidence" : "Local evidence review is running")}
           </span>
           <span className="text-sky-300/65">
-            {completedAgents.length} of {session.selectedAgents.length} roles complete · {formatElapsed(elapsedSeconds)} elapsed
+            {runningAgents.length > 0 ? `${completedAgents.length} of ${session.selectedAgents.length} roles complete · ` : ""}{formatElapsed(elapsedSeconds)} elapsed
           </span>
-        </div>
-      ) : null}
+      </div>
 
       <AgentReviewRecord session={session} compact />
     </section>
@@ -236,6 +250,12 @@ function useAnalysisElapsedSeconds(session: ResearchSession) {
     .map((agent) => agent.startedAt)
     .filter((value): value is string => Boolean(value))
     .map((value) => new Date(value).getTime())
+    .concat(
+      session.pipeline
+        .map((stage) => stage.startedAt)
+        .filter((value): value is string => Boolean(value))
+        .map((value) => new Date(value).getTime()),
+    )
     .reduce<number | null>((earliest, value) => earliest === null ? value : Math.min(earliest, value), null);
   const [now, setNow] = useState(() => Date.now());
 
@@ -285,7 +305,7 @@ function AgentReviewRecord({ session, compact = false }: { session: ResearchSess
   );
 }
 
-function ResearchErrorState({ session, onRetry }: { session: ResearchSession; onRetry: () => void }) {
+function ResearchErrorState({ session, onRetry, retrying }: { session: ResearchSession; onRetry: () => Promise<void>; retrying: boolean }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   return (
     <section className="mt-8 rounded-[1.2rem] border border-amber-300/15 bg-[linear-gradient(135deg,rgba(251,191,36,0.06),rgba(255,255,255,0.015))] px-5 py-5">
@@ -304,8 +324,8 @@ function ResearchErrorState({ session, onRetry }: { session: ResearchSession; on
           </div>
         </div>
         {session.error?.retryable !== false ? (
-          <button type="button" onClick={onRetry} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-full border border-amber-200/20 bg-amber-200/[0.07] px-4 text-xs font-semibold text-amber-100 transition hover:bg-amber-200/[0.12]">
-            <RefreshCw className="h-3.5 w-3.5" /> Retry analysis
+          <button type="button" onClick={() => void onRetry()} disabled={retrying} aria-busy={retrying} className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-full border border-amber-200/20 bg-amber-200/[0.07] px-4 text-xs font-semibold text-amber-100 transition hover:bg-amber-200/[0.12] disabled:cursor-wait disabled:opacity-60">
+            <RefreshCw className={`h-3.5 w-3.5 ${retrying ? "animate-spin" : ""}`} /> {retrying ? "Retrying..." : "Retry analysis"}
           </button>
         ) : null}
       </div>
@@ -321,6 +341,17 @@ function groupStatus(session: ResearchSession, stageIds: PipelineStageId[]) {
   if (stages.every((stage) => stage.status === "completed" || stage.status === "skipped")) return "completed";
   if (stages.some((stage) => stage.status === "running" || stage.status === "partial")) return "running";
   return "pending";
+}
+
+function groupProgress(session: ResearchSession, stageIds: PipelineStageId[]) {
+  const stages = stageIds
+    .map((id) => session.pipeline.find((stage) => stage.id === id))
+    .filter((stage): stage is ResearchSession["pipeline"][number] => Boolean(stage));
+  if (stages.length === 0) return 0;
+  return stages.reduce((sum, stage) => {
+    if (stage.status === "completed" || stage.status === "skipped") return sum + 100;
+    return sum + Math.max(0, Math.min(100, stage.progress));
+  }, 0) / stages.length;
 }
 
 function SessionLoading() {

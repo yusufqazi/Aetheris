@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
 
-import { getResearchJob } from "@/lib/research/jobs";
+import {
+  getResearchJob,
+  registerResearchJob,
+  runRegisteredResearchJob,
+} from "@/lib/research/jobs";
 import { fetchSessionByIdFromSupabase } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const STALE_RESEARCH_RUN_MS = 30_000;
 
 export async function GET(
   request: Request,
@@ -29,6 +35,20 @@ export async function GET(
     return NextResponse.json({ error: "Research job not found." }, { status: 404 });
   }
 
+  // Jobs are held in memory while they run. If a local server restarts (or a
+  // short-lived worker is replaced), the last Supabase checkpoint can otherwise
+  // look active forever. Resume only old, non-terminal checkpoints so a live
+  // job is never duplicated.
+  if (isStaleActiveSession(session)) {
+    const resumedJob = registerResearchJob(session, accessToken);
+    void runRegisteredResearchJob(session.id, accessToken);
+    return NextResponse.json({
+      status: resumedJob.status,
+      mode: resumedJob.session.mode,
+      events: [],
+    });
+  }
+
   return NextResponse.json({
     status: session.status === "completed"
       ? "completed"
@@ -41,8 +61,13 @@ export async function GET(
   });
 }
 
+function isStaleActiveSession(session: { status: string; updatedAt: string }) {
+  if (["idle", "completed", "error"].includes(session.status)) return false;
+  const updatedAt = Date.parse(session.updatedAt);
+  return Number.isFinite(updatedAt) && Date.now() - updatedAt > STALE_RESEARCH_RUN_MS;
+}
+
 function accessTokenFromRequest(request: Request) {
   const value = request.headers.get("authorization");
   return value?.match(/^Bearer\s+(.+)$/i)?.[1] ?? null;
 }
-

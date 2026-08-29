@@ -5,12 +5,13 @@ import {
   isGenericOpenQuestion,
   isOpenQuestionAnswered,
   openQuestionFromGap,
+  openQuestionQualityIssues,
 } from "@/lib/research/open-questions";
 import type { GroundedFact, ResearchContentType } from "@/lib/types";
 
 describe("evidence-specific open questions", () => {
   it.each([
-    ["Kidney biopsy has not yet been performed.", /documented result for kidney biopsy/i],
+    ["Kidney biopsy has not yet been performed.", /if kidney biopsy is performed, what does it show/i],
     ["Urine protein quantification is pending.", /pending urine protein quantification show/i],
     ["Renal function trend remains unknown.", /how does renal function trend change on repeat measurement/i],
     ["Obstructive disease was not formally excluded.", /obstructive disease.*confirmed or excluded/i],
@@ -38,6 +39,34 @@ describe("evidence-specific open questions", () => {
     expect(isOpenQuestionAnswered(
       "What is the documented result for kidney biopsy?",
       [fact("recommendation", "Long-term therapy should be deferred until kidney biopsy is completed.")],
+    )).toBe(false);
+  });
+
+  it("turns an until-established condition into natural English", () => {
+    const question = openQuestionFromGap(
+      "Medication reconciliation should include explicit avoidance of non-prescribed NSAID use until renal recovery is established.",
+    );
+
+    expect(question).toBe("Has renal recovery been established?");
+    expect(question).not.toMatch(/what does .*\bis\b.* show/i);
+  });
+
+  it("rejects temporal fragments mechanically converted into questions", () => {
+    expect(openQuestionQualityIssues("What does four weeks; ferritin show?"))
+      .toEqual(expect.arrayContaining(["temporal-fragment", "compound-fragment"]));
+  });
+
+  it.each([
+    "What does renal recovery is established show?",
+    "Is volume depletion is suspected, but medication-related injury confirmed or excluded?",
+  ])("rejects duplicated auxiliary grammar in %s", (question) => {
+    expect(openQuestionQualityIssues(question)).toContain("auxiliary-collision");
+  });
+
+  it("does not treat a current ferritin measurement as resolving a future outcome", () => {
+    expect(isOpenQuestionAnswered(
+      "Will ferritin normalize with oral therapy alone?",
+      [fact("longitudinal_change", "Follow-up ferritin was 14 ng/mL after four weeks and remains low.")],
     )).toBe(false);
   });
 

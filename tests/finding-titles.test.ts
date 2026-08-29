@@ -10,7 +10,7 @@ describe("createClinicalFindingTitle", () => {
         providedTitle: "Outstanding Needs Final",
         dimension: "limitation",
       }),
-    ).toBe("Outstanding Evidence");
+    ).toBe("Unresolved evidence");
   });
 
   it("describes the consequence instead of copying connective words", () => {
@@ -22,7 +22,7 @@ describe("createClinicalFindingTitle", () => {
         dimension: "context",
         contentTypes: ["recommendation"],
       }),
-    ).toBe("Risk of Delayed Treatment");
+    ).toBe("Treatment recommendation");
   });
 
   it("turns malformed disagreement labels into meaningful treatment titles", () => {
@@ -34,7 +34,7 @@ describe("createClinicalFindingTitle", () => {
         dimension: "context",
         contentTypes: ["recommendation"],
       }),
-    ).toBe("Steroid Timing Disagreement");
+    ).toBe("Treatment recommendation");
   });
 
   it("summarizes the underlying safety concern", () => {
@@ -44,7 +44,7 @@ describe("createClinicalFindingTitle", () => {
         providedTitle: "Reasoning Pulse Dose",
         dimension: "safety",
       }),
-    ).toBe("Infection Risk");
+    ).toBe("Safety consideration");
   });
 
   it("generalizes to diagnosis and outcome findings", () => {
@@ -54,14 +54,14 @@ describe("createClinicalFindingTitle", () => {
           "Acute cellular rejection is the most likely cause of allograft dysfunction.",
         dimension: "diagnosis",
       }),
-    ).toBe("Acute Cellular Rejection Diagnosis");
+    ).toBe("Diagnostic evidence");
 
     expect(
       createClinicalFindingTitle({
         statement: "Hemoglobin improved after iron replacement therapy.",
         dimension: "efficacy",
       }),
-    ).toBe("Hemoglobin Outcome");
+    ).toBe("Clinical status");
   });
 
   it("preserves meaningful clinical acronym casing", () => {
@@ -70,6 +70,16 @@ describe("createClinicalFindingTitle", () => {
         statement: "QTc prolongation may increase the risk of arrhythmia.",
         dimension: "safety",
       }),
-    ).toBe("QTc Prolongation Risk");
+    ).toBe("Safety consideration");
+  });
+
+  it("does not let a stale unresolved label override a confirmed diagnostic finding", () => {
+    expect(
+      createClinicalFindingTitle({
+        statement: "The AKI is likely multifactorial.",
+        providedTitle: "Unresolved evidence",
+        dimension: "context",
+      }),
+    ).toBe("Diagnostic evidence");
   });
 });

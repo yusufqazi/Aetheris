@@ -13,6 +13,7 @@ export function CitationLinks({
   claim,
   relationships = [],
   align = "start",
+  compact = false,
 }: {
   citationIds: string[];
   citations: Citation[];
@@ -21,6 +22,7 @@ export function CitationLinks({
   claim?: string;
   relationships?: EvidenceRelationship[];
   align?: "start" | "end";
+  compact?: boolean;
 }) {
   const { selectInspector, setMobileInspectorOpen } = useWorkspace();
   const mappedCitationIds = relationships.length > 0
@@ -37,7 +39,7 @@ export function CitationLinks({
 
   if (groups.length === 0) return null;
   return (
-    <div className={`flex w-full min-w-0 max-w-full flex-wrap gap-1.5 ${align === "end" ? "justify-start lg:justify-end" : "justify-start"}`}>
+    <div className={`flex min-w-0 max-w-full flex-wrap gap-1.5 ${compact ? "w-auto" : "w-full"} ${align === "end" ? "justify-start lg:justify-end" : "justify-start"}`}>
       {groups.map((group) => {
         const citation = group[0];
         const excerptCount = new Set(group.map(citationKey)).size;
@@ -57,7 +59,8 @@ export function CitationLinks({
             setMobileInspectorOpen(true);
           }}
           className="inline-flex min-h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full border border-sky-300/15 bg-sky-400/[0.055] px-2.5 py-1.5 font-mono text-[8px] uppercase tracking-[0.08em] text-sky-300 transition hover:border-sky-300/25 hover:bg-sky-400/[0.12] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300"
-          aria-label={`Open ${excerptCount} evidence excerpt${excerptCount === 1 ? "" : "s"} from ${citation.documentName}, page ${citation.page ?? "unknown"}`}
+          aria-label={`Open ${excerptCount} evidence excerpt${excerptCount === 1 ? "" : "s"} from ${citation.documentName}, page ${citation.page ?? "unknown"}${claim ? `, supporting ${conciseClaim(claim)}` : ""}`}
+          title={claim ? `Supports: ${conciseClaim(claim)}` : undefined}
         >
           <span className="sm:hidden">{citation.label} · p.{citation.page ?? "?"}</span>
           <span className="hidden min-w-0 truncate sm:inline">
@@ -70,6 +73,11 @@ export function CitationLinks({
       })}
     </div>
   );
+}
+
+function conciseClaim(value: string) {
+  const claim = value.replace(/\s+/g, " ").trim();
+  return claim.length > 140 ? `${claim.slice(0, 137).trimEnd()}...` : claim;
 }
 
 function citationKey(citation?: Citation | null) {

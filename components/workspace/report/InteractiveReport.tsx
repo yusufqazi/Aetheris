@@ -8,12 +8,14 @@ import {
   Copy,
   Download,
   LoaderCircle,
+  RefreshCw,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { CitationLinks, documentTitle } from "@/components/workspace/report/CitationLinks";
 import { InvestigationSummary } from "@/components/workspace/report/InvestigationSummary";
 import { ResearchQuestionSummary } from "@/components/workspace/ResearchQuestionSummary";
+import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import { getSessionCitations, selectNarrowEvidenceQuote } from "@/lib/research/evidence-spans";
 import {
   areSemanticallyEquivalent,
@@ -21,6 +23,7 @@ import {
 } from "@/lib/research/evidence-relationships";
 import { buildInvestigationData } from "@/lib/research/investigation";
 import { createClinicalFindingTitle } from "@/lib/research/finding-titles";
+import { modelFallbackReason } from "@/lib/research/user-facing-errors";
 import type { AgentId, Citation, ResearchSession } from "@/lib/types";
 
 const PROCESS_LABELS: Record<AgentId, string> = {
@@ -33,13 +36,18 @@ const PROCESS_LABELS: Record<AgentId, string> = {
 };
 
 export function InteractiveReport({ session }: { session: ResearchSession }) {
+  const { startAnalysis } = useWorkspace();
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [retryingModel, setRetryingModel] = useState(false);
   const report = session.results?.reportGeneration;
   const citations = getSessionCitations(session);
   const investigation = buildInvestigationData(session);
   const strongestEvidence = selectStrongestEvidenceItems(investigation, citations, session.question);
+  const primaryAnswerSources = primaryAnswerCitationTargets(investigation);
+  const fallbackReason = modelFallbackReason(session.events);
 
   useEffect(() => {
     if (!copied) return;
@@ -48,8 +56,23 @@ export function InteractiveReport({ session }: { session: ResearchSession }) {
   }, [copied]);
 
   async function copyReport() {
-    await navigator.clipboard.writeText(createCopyText(session, investigation, citations));
-    setCopied(true);
+    setCopyError(null);
+    try {
+      await navigator.clipboard.writeText(createCopyText(session, investigation, citations));
+      setCopied(true);
+    } catch {
+      setCopyError("The report could not be copied. Check this browser's clipboard permission and try again.");
+    }
+  }
+
+  async function retryModelAnalysis() {
+    if (retryingModel) return;
+    setRetryingModel(true);
+    try {
+      await startAnalysis(session, { retry: true });
+    } finally {
+      setRetryingModel(false);
+    }
   }
 
   async function downloadReport() {
@@ -146,8 +169,30 @@ export function InteractiveReport({ session }: { session: ResearchSession }) {
             </button>
           </div>
         </div>
-        {exportError ? <p className="mt-2 text-right text-[10px] text-amber-200/70">{exportError}</p> : null}
+        {copyError ? <p role="alert" className="mt-2 text-right text-[10px] text-amber-200/70">{copyError}</p> : null}
+        {exportError ? <p role="alert" className="mt-2 text-right text-[10px] text-amber-200/70">{exportError}</p> : null}
       </header>
+
+      {fallbackReason ? (
+        <section className="mt-5 flex flex-col gap-3 rounded-[1rem] border border-amber-200/15 bg-amber-200/[0.035] px-4 py-3 sm:flex-row sm:items-center sm:justify-between" aria-label="Model analysis status">
+          <div>
+            <p className="font-mono text-[8px] uppercase tracking-[0.17em] text-amber-200/70">Model-assisted review unavailable</p>
+            <p className="mt-1 text-xs leading-5 text-slate-400">
+              This brief completed with local source-grounded processing. Your documents and completed work were preserved.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void retryModelAnalysis()}
+            disabled={retryingModel}
+            aria-busy={retryingModel}
+            className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-full border border-amber-200/15 px-3.5 text-[11px] text-amber-100/80 transition hover:border-amber-200/30 hover:text-amber-50 disabled:cursor-wait disabled:opacity-60"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${retryingModel ? "animate-spin" : ""}`} />
+            {retryingModel ? "Retrying" : "Retry model analysis"}
+          </button>
+        </section>
+      ) : null}
 
       <section className="mt-6 rounded-[1.35rem] border border-sky-300/15 bg-[radial-gradient(circle_at_92%_0%,rgba(37,99,235,0.15),transparent_40%),linear-gradient(145deg,rgba(37,99,235,0.07),rgba(255,255,255,0.015))] p-5 sm:p-7" aria-labelledby="primary-answer-title">
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(14rem,0.32fr)]">
@@ -156,8 +201,21 @@ export function InteractiveReport({ session }: { session: ResearchSession }) {
             <h2 id="primary-answer-title" className="mt-3 max-w-4xl text-[clamp(1.15rem,2.2vw,1.65rem)] font-medium leading-[1.5] tracking-[-0.025em] text-slate-100">
               {investigation.directAnswer}
             </h2>
-            {investigation.strongestCitationIds.length > 0 ? (
-              <div className="mt-5"><CitationLinks citationIds={investigation.strongestCitationIds} citations={citations} session={session} limit={4} claim={investigation.directAnswer} relationships={investigation.findings.flatMap((finding) => finding.relationships)} /></div>
+            {primaryAnswerSources.length > 0 ? (
+              <div className="mt-5 flex flex-wrap gap-1.5" aria-label="Sources supporting the primary answer">
+                {primaryAnswerSources.map((source) => (
+                  <CitationLinks
+                    key={source.citationId}
+                    citationIds={[source.citationId]}
+                    citations={citations}
+                    session={session}
+                    limit={1}
+                    claim={source.claim}
+                    relationships={source.relationships}
+                    compact
+                  />
+                ))}
+              </div>
             ) : null}
           </div>
           <div className="border-t border-white/[0.08] pt-5 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
@@ -213,9 +271,49 @@ export function InteractiveReport({ session }: { session: ResearchSession }) {
   );
 }
 
+export function primaryAnswerCitationTargets(
+  investigation: ReturnType<typeof buildInvestigationData>,
+) {
+  const preferredIds = new Set(investigation.strongestCitationIds);
+  const alignedFindings = investigation.findings.filter((finding) =>
+    answerIncludesFinding(investigation.directAnswer, finding.statement),
+  );
+
+  return alignedFindings
+    .flatMap((finding) => finding.citationIds.map((citationId) => ({
+      citationId,
+      claim: finding.statement,
+      relationships: finding.relationships.filter((item) => item.citationId === citationId),
+      preferred: preferredIds.has(citationId),
+    })))
+    .sort((left, right) => Number(right.preferred) - Number(left.preferred))
+    .filter((item, index, items) =>
+      items.findIndex((candidate) => candidate.citationId === item.citationId) === index,
+    )
+    .slice(0, 4);
+}
+
+function answerIncludesFinding(answer: string, finding: string) {
+  if (areSemanticallyEquivalent(answer, finding)) return true;
+  const answerTopics = new Set(semanticTopics(answer));
+  const findingTopics = semanticTopics(finding);
+  const shared = findingTopics.filter((topic) => answerTopics.has(topic)).length;
+  const findingNumbers: string[] = finding.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+  const answerNumbers: string[] = answer.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
+  const numbersAlign = findingNumbers.length === 0 ||
+    findingNumbers.every((value) => answerNumbers.includes(value));
+  return numbersAlign && shared >= Math.min(3, Math.max(2, findingTopics.length));
+}
+
 function ProcessDisclosure({ session }: { session: ResearchSession }) {
   const report = session.results?.reportGeneration;
   const modelReason = [...session.events].reverse().find((event) => event.type === "analysis.mode")?.data.reason;
+  const fallbackReason = modelFallbackReason(session.events);
+  const executionDescription = fallbackReason
+    ? "Model-assisted analysis became unavailable; local source-grounded processing completed this brief."
+    : session.mode === "live"
+      ? modelReason ?? "Configured model-assisted analysis"
+      : "Deterministic local evidence processing";
   return (
     <details className="group mt-8 border-y border-white/[0.07] py-1">
       <summary className="flex min-h-14 cursor-pointer list-none items-center justify-between gap-4 py-3 text-sm font-medium text-slate-300">
@@ -226,7 +324,7 @@ function ProcessDisclosure({ session }: { session: ResearchSession }) {
         <div className="grid gap-5 text-xs leading-5 text-slate-500 sm:grid-cols-3">
           <div><p className="font-mono text-[8px] uppercase tracking-[0.14em] text-slate-600">Sources</p><p className="mt-2">{session.documents.length} documents · {session.metrics.pageCount} extracted pages</p></div>
           <div><p className="font-mono text-[8px] uppercase tracking-[0.14em] text-slate-600">Retrieval</p><p className="mt-2">{session.metrics.retrievedEvidenceCount} passages ranked with {session.metrics.retrievalMethod ?? "document"} retrieval</p></div>
-          <div><p className="font-mono text-[8px] uppercase tracking-[0.14em] text-slate-600">Execution</p><p className="mt-2">{session.mode === "live" ? modelReason ?? "Configured model-assisted analysis" : "Deterministic local evidence processing"}</p></div>
+          <div><p className="font-mono text-[8px] uppercase tracking-[0.14em] text-slate-600">Execution</p><p className="mt-2">{executionDescription}</p></div>
         </div>
 
         <div className="mt-6 divide-y divide-white/[0.06] border-y border-white/[0.06]">

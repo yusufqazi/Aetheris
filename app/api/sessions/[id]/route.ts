@@ -22,8 +22,13 @@ export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const accessToken = accessTokenFromRequest(request);
+  if (!accessToken) {
+    return NextResponse.json({ error: "Authentication is required to delete a research session." }, { status: 401 });
+  }
+
   const { id } = await params;
-  const result = await deleteSessionFromSupabase(id, accessTokenFromRequest(request));
+  const result = await deleteSessionFromSupabase(id, accessToken);
   if (result?.error) {
     console.error("[Aetheris sessions] Remote deletion failed", result.error);
     return NextResponse.json({ error: "The analysis could not be deleted from remote storage." }, { status: 500 });

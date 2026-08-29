@@ -10,7 +10,7 @@ import type {
 const PATIENT_IDENTIFIER =
   /\b(?:MRN|medical record number|patient id|subject id|record id|encounter id|accession number|case number)\s*[:#-]?\s*[A-Z0-9][A-Z0-9._/-]{2,}\b/gi;
 const PATIENT_NAME =
-  /\bpatient(?:\s+name)?\s*[:#-]?\s+[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){1,3}(?=\s+(?:MRN|DOB|date|study|report|region|finding)\b|[,;.]|$)/gi;
+  /\b[Pp]atient(?:\s+name)?\s*[:#-]?\s+[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){1,3}(?=\s+(?:MRN|DOB|date|study|report|region|finding)\b|[,;.]|$)/g;
 const CALENDAR_DATE =
   /\b(?:(?:study|report|document|exam|service|visit|collection|scan|follow-up)\s+date\s*[:#-]?\s*)?(?:19|20)\d{2}[-/]\d{1,2}[-/]\d{1,2}\b/gi;
 const TESTING_NOTICE =
@@ -24,20 +24,28 @@ const DOCUMENT_TITLE =
   /^(?:[A-Z0-9][A-Za-z0-9/&()+-]*\s+){1,10}(?:Report|Note|Consultation|Summary|Document|Record|Memorandum|Protocol|Review|Appendix|Brief)$/;
 const PAGE_FURNITURE =
   /^(?:page\s*)?\d+\s*(?:of|\/)\s*\d+|^page\s*[:#-]?\s*\d+|^(?:confidential|privileged|copyright|all rights reserved|do not distribute)\b/i;
+const EVENT_METADATA =
+  /^(?:consult|consultation|update|progress note|planning discussion|medication review|specimen|study|collection interval|encounter)\s*[:#-]\s*(?:(?:19|20)\d{2}[-/]\d{1,2}[-/]\d{1,2}\s*)?(?:\d{1,2}:\d{2})?\s*$/i;
+const DOCUMENT_HEADER_WITH_TIMESTAMP =
+  /^(?:[A-Za-z][A-Za-z0-9/&()+-]*\s+){0,8}(?:assessment|brief|consult|consultation|note|record|report|review|summary|update)\s*[—–-]\s*(?:(?:19|20)\d{2}[-/]\d{1,2}[-/]\d{1,2}\s*)?\d{1,2}:\d{2}\s*$/i;
+const DYNAMIC_UNRESOLVED_SECTION =
+  /^(?:unresolved|pending|missing|outstanding)\s+[a-z][a-z /-]{1,50}\s+(?:evidence|information|results?|data)$/i;
+const CONTEXTUAL_SECTION =
+  /^(?:[a-z][a-z /-]{1,50}\s+)?(?:assessment|consideration|course|distinction|evidence|findings?|function|plan|position|recommendation|status|strategy|tension|trend)$/i;
 const KNOWN_SECTION =
-  /^(?:abstract|background|methods?|results?|discussion|conclusion|program conclusion|assessment|assessment and plan|impression|diagnosis|findings?|observed outcomes?|documentation discrepancy|safety findings?|efficacy findings?|limitations?|recommendations?|treatment plan|laboratory results?|adverse events?|follow-up)$/i;
+  /^(?:abstract|background|methods?|results?|discussion|conclusion|program conclusion|assessment|initial assessment|assessment and plan|impression|interpretation|comparison|diagnosis|findings?|observed outcomes?|clinical course|clinical status|documentation discrepancy|safety findings?|efficacy findings?|limitations?|interpretive limitation|relevance limitation|recommendations?|treatment plan|plan|shared plan|hospitalist position|nephrology addendum|scope statement|discharge consideration|unresolved point|medication safety|laboratory results?|laboratory trend|renal trend|other results|adverse events?|follow-up|reason for consult|key distinction|presentation|testing|ed plan|discharge)$/i;
 const INLINE_SECTION =
-  /^(abstract|background|methods?|results?|discussion|conclusion|program conclusion|assessment(?: and plan)?|impression|diagnosis|findings?|observed outcomes?|documentation discrepancy|safety findings?|efficacy findings?|limitations?|recommendations?|treatment plan|laboratory results?|adverse events?|follow-up)\s*[:#-]?\s+/i;
+  /^(abstract|background|methods?|results?|discussion|conclusion|program conclusion|assessment|initial assessment|assessment and plan|impression|interpretation|diagnosis|findings?|observed outcomes?|clinical course|clinical status|documentation discrepancy|safety findings?|efficacy findings?|limitations?|interpretive limitation|relevance limitation|recommendations?|treatment plan|plan|shared plan|hospitalist position|nephrology addendum|scope statement|discharge consideration|unresolved point|medication safety|laboratory results?|laboratory trend|renal trend|other results|adverse events?|follow-up)\s*[:#-]\s+/i;
 const FINITE_PREDICATE =
   /\b(?:is|are|was|were|has|have|had|shows?|showed|reports?|reported|demonstrates?|demonstrated|supports?|supported|indicates?|indicated|confirms?|confirmed|identifies?|identified|raises?|raised|requires?|required|recommends?|recommended|improves?|improved|increases?|increased|decreases?|decreased|reduces?|reduced|remains?|remained|persists?|persisted|occurred|observed|classified|excluded|received|developed|may|might|can|could|should|would|will)\b/i;
 const CLINICAL_SIGNAL =
   /\b(?:diagnos|disease|syndrome|symptom|treatment|therapy|regimen|medication|dose|safety|efficacy|adverse|risk|fall|pain|laborator|biomarker|imaging|biopsy|culture|positive|negative|elevated|decreased|increased|improved|response|remission|mortality|survival|limitation|uncertain|recommend|should|mg|mcg|g\/dL|ng\/mL|mmHg|bpm|%|\d+(?:\.\d+)?)\b/i;
 const UNCERTAINTY_SIGNAL =
-  /\b(?:uncertain|unclear|unknown|cannot determine|not established|not confirmed|insufficient|could not determine|remains unresolved|not excluded|pending)\b/i;
+  /\b(?:uncertain|unclear|unknown|cannot determine|does not yet contain|not yet available|not established|not confirmed|insufficient|could not determine|remains unresolved|not excluded|pending|unresolved evidence)\b/i;
 const LIMITATION_SIGNAL =
   /\b(?:limitation|limited by|not represented|excluded|incomplete|missing evidence|additional study data|further study|small sample|short follow-up|no randomized comparator|single[- ]center)\b/i;
 const RECOMMENDATION_SIGNAL =
-  /\b(?:recommend(?:s|ed|ation)?|should|must|consider|prioriti[sz]e|initiate|begin|start|continue|avoid|defer|delay|hold|withhold|stop|monitor|repeat|obtain|confirm|protocol amendment)\b/i;
+  /\b(?:recommend(?:s|ed|ation)?|request(?:s|ed)?|prefer(?:s|red)?|favor(?:s|ed)?|should|must|consider|prioriti[sz]e|initiate|begin|start|continue|avoid|defer|delay|hold|withhold|stop|monitor|repeat|obtain|confirm|protocol amendment)\b|^(?:do not|reduce|decrease|increase|intensify|escalate|de-escalate|taper|target)\b|\b(?:discharge|transfer|treatment|therapy|procedure)\b.{0,60}\b(?:can|could|may)\s+be\s+(?:considered|reasonable|appropriate)\b/i;
 const DIAGNOSIS_SIGNAL =
   /\b(?:diagnos(?:is|ed)|most likely cause|leading cause|consistent with|supports?.{0,60}(?:syndrome|disease|infection|condition))\b/i;
 const NUMERIC_VALUE =
@@ -107,12 +115,14 @@ function normalizeEvidenceItem(
   sections: NormalizedSectionHeading[],
   repeatedFurniture: Set<string>,
 ) {
-  const lines = item.excerpt
+  const sourceLines = item.excerpt
     .replace(/\r\n?/g, "\n")
     .split(/\n+/)
     .map((line) => line.replace(/[\t ]+/g, " ").trim())
     .filter(Boolean);
+  const lines = reflowWrappedEvidenceLines(sourceLines, item, repeatedFurniture);
   let currentSectionId: string | null = null;
+  let currentSectionHeading = "";
   let tableHeaders: string[] | null = null;
   let objectIndex = 0;
   let sectionIndex = 0;
@@ -129,6 +139,7 @@ function normalizeEvidenceItem(
       heading: normalized,
     });
     currentSectionId = id;
+    currentSectionHeading = normalized;
   };
 
   const addObject = (
@@ -150,7 +161,7 @@ function normalizeEvidenceItem(
       documentId: item.documentId,
       page: item.page,
       sectionId: currentSectionId,
-      kind: classifyNormalizedKind(normalized, Boolean(table)),
+      kind: classifyNormalizedKind(normalized, Boolean(table), currentSectionHeading),
       statement: normalized,
       numericValues: extractNumericValues(normalized),
       table,
@@ -240,11 +251,47 @@ function isDiscardedLine(value: string) {
     WORKFLOW_LANGUAGE.test(text) ||
     DOCUMENT_PURPOSE.test(text) ||
     PAGE_FURNITURE.test(text) ||
+    EVENT_METADATA.test(text) ||
+    DOCUMENT_HEADER_WITH_TIMESTAMP.test(text) ||
     isDocumentTitle(text)
   ) {
     return true;
   }
   return /^(?:patient|mrn|medical record number|document title|file name|filename|prepared by|reviewed by|author|facility|department)\s*[:#-]/i.test(text);
+}
+
+function reflowWrappedEvidenceLines(
+  lines: string[],
+  item: EvidenceItem,
+  repeatedFurniture: Set<string>,
+) {
+  const output: string[] = [];
+  let buffer = "";
+  const flush = () => {
+    if (buffer) output.push(buffer.replace(/\s+/g, " ").trim());
+    buffer = "";
+  };
+
+  for (const line of lines) {
+    const startsBullet = /^[•*-]\s*/.test(line);
+    const startsTableRow = line.includes("|") || line.includes("\t");
+    const structural = isStructuralLine(line, item, repeatedFurniture) ||
+      isSectionHeading(line) ||
+      isDiscardedLine(line);
+    if (structural) {
+      flush();
+      output.push(line);
+      continue;
+    }
+    if (startsBullet || startsTableRow || !buffer || /[.!?)]$/.test(buffer)) {
+      flush();
+      buffer = line;
+      continue;
+    }
+    buffer = `${buffer} ${line}`;
+  }
+  flush();
+  return output;
 }
 
 function isStructuralLine(
@@ -278,7 +325,7 @@ function isCurrentDocumentTitle(value: string, documentName: string) {
 
 function isSectionHeading(value: string) {
   const text = value.replace(/[:#-]+$/, "").replace(/\s+/g, " ").trim();
-  if (KNOWN_SECTION.test(text)) return true;
+  if (KNOWN_SECTION.test(text) || DYNAMIC_UNRESOLVED_SECTION.test(text) || CONTEXTUAL_SECTION.test(text)) return true;
   if (text.length > 80 || extractNumericValues(text).length || FINITE_PREDICATE.test(text) || CLINICAL_SIGNAL.test(text)) {
     return false;
   }
@@ -396,7 +443,8 @@ function normalizeClinicalStatement(value: string) {
   return ensureSentence(text);
 }
 
-function classifyNormalizedKind(value: string, table: boolean): NormalizedEvidenceKind {
+function classifyNormalizedKind(value: string, table: boolean, sectionHeading = ""): NormalizedEvidenceKind {
+  if (/\b(?:unresolved|pending|missing|outstanding)\b/i.test(sectionHeading)) return "limitation";
   if (RECOMMENDATION_SIGNAL.test(value)) return "recommendation";
   if (UNCERTAINTY_SIGNAL.test(value)) return "uncertainty";
   if (LIMITATION_SIGNAL.test(value)) return "limitation";

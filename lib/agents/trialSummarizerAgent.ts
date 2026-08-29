@@ -17,10 +17,12 @@ export async function runTrialSummarizerAgent({
   question,
   chunks,
   onFallback,
+  shouldUseProvider,
 }: {
   question: string;
   chunks: SearchChunk[];
   onFallback?: FallbackObserver;
+  shouldUseProvider?: () => boolean;
 }) {
   const facts = groundedFactsFromChunks(chunks, question);
   const design = factsByCategory(facts, "study-design");
@@ -36,6 +38,7 @@ export async function runTrialSummarizerAgent({
     schemaName: "trial_summarizer_output",
     qualityCheck: (output) => output.findings.length > 0 && hasConcreteContent(output),
     onFallback,
+    shouldUseProvider,
     fallback: () => ({
       agentName: "Clinical Trial Summarizer Agent",
       summary: [...design, ...findings, ...limitations].slice(0, 4).map((fact) => fact.text).join(" "),

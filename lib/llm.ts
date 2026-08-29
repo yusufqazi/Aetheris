@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import OpenAI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { toJSONSchema, type ZodType } from "zod";
@@ -52,6 +52,8 @@ export async function runStructuredGeneration<T>({
   fallback,
   qualityCheck,
   onFallback,
+  shouldUseProvider,
+  maxAttempts,
 }: {
   system: string;
   user: string;
@@ -60,31 +62,56 @@ export async function runStructuredGeneration<T>({
   fallback: () => T;
   qualityCheck?: (value: T) => boolean | { valid: boolean; reason?: string };
   onFallback?: (reason: string) => void;
+  shouldUseProvider?: () => boolean;
+  maxAttempts?: number;
 }) {
   const configuration = getLlmConfiguration();
   if (!configuration.enabled || !configuration.provider || !configuration.model) {
     onFallback?.("No AI provider is configured; deterministic local extraction was used.");
     return fallback();
   }
+  if (shouldUseProvider && !shouldUseProvider()) {
+    onFallback?.("The AI provider is unavailable for this analysis; deterministic local extraction was used.");
+    return fallback();
+  }
 
   let failureReason = "The AI response could not be validated.";
 
-  const maximumAttempts = 2;
+  const googleModels = configuration.provider === "google"
+    ? googleGenerationModels(configuration.model)
+    : [configuration.model];
+  // Keep one correction attempt on the primary model, then reserve one call
+  // for a second live Gemini model when the primary is unavailable or invalid.
+  const defaultMaximumAttempts = configuration.provider === "google" && googleModels.length > 1 ? 3 : 2;
+  const maximumAttempts = Math.max(
+    1,
+    Math.min(defaultMaximumAttempts, maxAttempts ?? defaultMaximumAttempts),
+  );
+  let googleModelIndex = 0;
+  let qualityFailuresForModel = 0;
 
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
     const attemptStartedAt = Date.now();
+    const attemptModel = googleModels[Math.min(googleModelIndex, googleModels.length - 1)] as string;
     try {
       const correction = attempt === 0
         ? ""
-        : "\n\nCorrection required: answer the research question directly, use only supplied evidence IDs, preserve concrete values, distinguish observations from interpretation, and remove vague or repeated language.";
+        : `\n\nCorrection required because the previous response failed validation: ${failureReason} ` +
+          "Rewrite the affected fields as complete natural-language claims. Answer every requested part, use only supplied evidence IDs, preserve observed versus possible versus recommended versus planned versus performed versus pending versus final states, keep neutral statements neutral, and remove fragments, repetition, and mechanically stitched prose.";
       const parsed = configuration.provider === "google"
-        ? await withGoogleSlot(() => generateWithGoogle({
-            system,
-            user: `${user}${correction}`,
-            schema,
-            schemaName,
-            model: configuration.model as string,
-          }))
+        ? await withGoogleSlot(() => {
+            if (shouldUseProvider && !shouldUseProvider()) {
+              throw new Error("The AI provider became unavailable during this analysis.");
+            }
+            return generateWithGoogle({
+              system,
+              user: `${user}${correction}`,
+              schema,
+              schemaName,
+              model: attemptModel,
+              attempt,
+            });
+          })
         : await generateWithOpenAi({
             system,
             user: `${user}${correction}`,
@@ -95,7 +122,12 @@ export async function runStructuredGeneration<T>({
       const result = schema.safeParse(parsed);
       if (!result.success) {
         failureReason = `AI output failed ${schemaName} schema validation.`;
-        logModelAttempt(schemaName, attempt, attemptStartedAt, failureReason);
+        qualityFailuresForModel += 1;
+        logModelAttempt(schemaName, attempt, attemptStartedAt, `${attemptModel}: ${failureReason}`);
+        if (qualityFailuresForModel >= 2 && googleModelIndex < googleModels.length - 1) {
+          googleModelIndex += 1;
+          qualityFailuresForModel = 0;
+        }
         continue;
       }
       if (qualityCheck) {
@@ -106,30 +138,63 @@ export async function runStructuredGeneration<T>({
           failureReason = reason
             ? `AI output for ${schemaName} failed grounding checks: ${reason}.`
             : `AI output for ${schemaName} was too vague or insufficiently grounded.`;
-          logModelAttempt(schemaName, attempt, attemptStartedAt, failureReason);
+          qualityFailuresForModel += 1;
+          logModelAttempt(schemaName, attempt, attemptStartedAt, `${attemptModel}: ${failureReason}`);
+          if (qualityFailuresForModel >= 2 && googleModelIndex < googleModels.length - 1) {
+            googleModelIndex += 1;
+            qualityFailuresForModel = 0;
+          }
           continue;
         }
       }
 
-      logModelAttempt(schemaName, attempt, attemptStartedAt, "completed");
+      logModelAttempt(schemaName, attempt, attemptStartedAt, `${attemptModel}: completed`);
       return result.data;
     } catch (error) {
       failureReason = describeModelError(error);
-      logModelAttempt(schemaName, attempt, attemptStartedAt, failureReason);
-      const retryable = isRetryableModelError(error) && !isGoogleRateLimitCircuitOpen();
-      if (attempt < maximumAttempts - 1 && retryable) {
-        await delay(modelRetryDelayMs(error, attempt));
-      } else if (!retryable) {
-        break;
+      logModelAttempt(schemaName, attempt, attemptStartedAt, `${attemptModel}: ${failureReason}`);
+      const retryable = isRetryableModelError(error);
+      const providerUnavailable = isProviderAvailabilityError(error);
+      const nextModelIndex = configuration.provider === "google"
+        ? nextGoogleModelIndex(googleModelIndex, googleModels.length, error)
+        : null;
+      if (nextModelIndex != null) {
+        googleModelIndex = nextModelIndex;
+        qualityFailuresForModel = 0;
+        continue;
       }
+      if (attempt < maximumAttempts - 1 && retryable && !providerUnavailable) {
+        await delay(modelRetryDelayMs(error, attempt));
+        continue;
+      }
+      break;
     }
   }
 
   console.error(
-    `[Aetheris AI] ${configuration.providerLabel} ${schemaName} generation fell back to local extraction: ${failureReason}`,
+    `[Aetheris AI] ${configuration.providerLabel} ${schemaName} generation failed: ${failureReason}`,
   );
+  if (configuration.enabled) {
+    throw new Error(
+      `${configuration.providerLabel} could not complete ${schemaName} generation. ${failureReason}`,
+    );
+  }
   onFallback?.(`${failureReason} Deterministic local extraction was used instead.`);
   return fallback();
+}
+
+function isProviderAvailabilityError(error: unknown) {
+  return error instanceof Error && /429|quota|rate.?limit|timeout|fetch failed|network|socket|ECONNRESET|503|temporar/i.test(error.message);
+}
+
+export function nextGoogleModelIndex(
+  currentIndex: number,
+  modelCount: number,
+  error: unknown,
+) {
+  return isProviderAvailabilityError(error) && currentIndex < modelCount - 1
+    ? currentIndex + 1
+    : null;
 }
 
 async function generateWithGoogle<T>({
@@ -138,32 +203,57 @@ async function generateWithGoogle<T>({
   schema,
   schemaName,
   model,
+  attempt,
 }: {
   system: string;
   user: string;
   schema: ZodType<T>;
   schemaName: string;
   model: string;
+  attempt: number;
 }) {
   const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
-  const abortSignal = AbortSignal.timeout(googleRequestTimeoutMs(schemaName));
+  const abortSignal = AbortSignal.timeout(googleRequestTimeoutMs(schemaName, attempt));
   const response = await client.models.generateContent({
     model,
     contents: user,
     config: {
       systemInstruction: system,
       temperature: 0.1,
-      maxOutputTokens: googleOutputTokenBudget(schemaName),
+      maxOutputTokens: googleOutputTokenBudget(schemaName, attempt),
+      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
       responseMimeType: "application/json",
       responseJsonSchema: makeGeminiSchema(schema),
       abortSignal,
     },
   });
-  const text = response.text;
+  return parseGeminiStructuredResponse(
+    response.text,
+    response.candidates?.[0]?.finishReason,
+  );
+}
+
+export function parseGeminiStructuredResponse(
+  text: string | undefined,
+  finishReason?: string,
+) {
+  if (finishReason === "MAX_TOKENS") {
+    throw new Error(
+      "Gemini structured response was truncated after reaching its output-token limit.",
+    );
+  }
+  if (finishReason && finishReason !== "STOP") {
+    throw new Error(`Gemini structured generation stopped with reason ${finishReason}.`);
+  }
   if (!text) {
     throw new Error("Gemini returned no structured response.");
   }
-  return JSON.parse(text) as unknown;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    const detail = error instanceof Error ? ` ${error.message}` : "";
+    throw new Error(`Gemini structured response contained malformed JSON.${detail}`);
+  }
 }
 
 async function generateWithOpenAi<T>({
@@ -238,6 +328,14 @@ function googleConfiguration(): LlmConfiguration {
   };
 }
 
+export function googleGenerationModels(primaryModel: string) {
+  const configuredFallbacks = (process.env.GEMINI_FALLBACK_MODELS ?? "gemini-3.1-flash-lite")
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+  return Array.from(new Set([primaryModel, ...configuredFallbacks]));
+}
+
 function openAiConfiguration(): LlmConfiguration {
   return {
     enabled: true,
@@ -264,32 +362,23 @@ function describeModelError(error: unknown) {
   return error.message;
 }
 
-function isRetryableModelError(error: unknown) {
+export function isRetryableModelError(error: unknown) {
   if (!(error instanceof Error) || /rate-limit circuit/i.test(error.message)) {
     return false;
   }
-  return /429|quota|rate.?limit|timeout|503|temporar/i.test(error.message);
+  return /429|quota|rate.?limit|timeout|503|temporar|fetch failed|network|socket|ECONNRESET|structured response (?:was truncated|contained malformed JSON)/i.test(
+    error.message,
+  );
 }
 
 let activeGoogleRequests = 0;
 let lastGoogleRequestStartedAt = 0;
 let googleCooldownUntil = 0;
-let googleRateLimitCircuitUntil = 0;
-let consecutiveGoogleRateLimits = 0;
 const googleWaiters: Array<() => void> = [];
 
 async function withGoogleSlot<T>(operation: () => Promise<T>) {
-  assertGoogleCircuitAvailable();
-  let waitedForSlot = false;
-  if (activeGoogleRequests >= 1) {
-    waitedForSlot = true;
+  if (activeGoogleRequests >= googleMaxConcurrentRequests()) {
     await new Promise<void>((resolve) => googleWaiters.push(resolve));
-  }
-  try {
-    assertGoogleCircuitAvailable();
-  } catch (error) {
-    if (waitedForSlot) googleWaiters.shift()?.();
-    throw error;
   }
   activeGoogleRequests += 1;
   try {
@@ -304,17 +393,10 @@ async function withGoogleSlot<T>(operation: () => Promise<T>) {
     lastGoogleRequestStartedAt = Date.now();
     try {
       const result = await operation();
-      consecutiveGoogleRateLimits = 0;
       return result;
     } catch (error) {
-      if (isRetryableModelError(error)) {
+      if (isGoogleRateLimitError(error) && !isDailyGoogleQuotaError(error)) {
         googleCooldownUntil = Math.max(googleCooldownUntil, Date.now() + modelRetryDelayMs(error, 0));
-      }
-      if (isGoogleRateLimitError(error)) {
-        consecutiveGoogleRateLimits += 1;
-        if (consecutiveGoogleRateLimits >= 2) {
-          googleRateLimitCircuitUntil = Date.now() + 60_000;
-        }
       }
       throw error;
     }
@@ -324,36 +406,44 @@ async function withGoogleSlot<T>(operation: () => Promise<T>) {
   }
 }
 
-function assertGoogleCircuitAvailable() {
-  if (!isGoogleRateLimitCircuitOpen()) return;
-  throw new Error(
-    "Google AI rate-limit circuit is temporarily open after repeated quota responses.",
-  );
-}
-
-function isGoogleRateLimitCircuitOpen() {
-  return googleRateLimitCircuitUntil > Date.now();
-}
-
 function isGoogleRateLimitError(error: unknown) {
   return error instanceof Error && /429|quota|rate.?limit/i.test(error.message);
 }
 
-function googleRequestIntervalMs() {
-  const configured = Number(process.env.GEMINI_MIN_REQUEST_INTERVAL_MS ?? 13_000);
-  return Number.isFinite(configured) ? Math.max(0, configured) : 13_000;
+export function isDailyGoogleQuotaError(error: unknown) {
+  return error instanceof Error && (
+    /GenerateRequestsPerDayPerProjectPerModel/i.test(error.message) ||
+    /requests\s+per\s+day|daily\s+quota/i.test(error.message)
+  );
 }
 
-function googleRequestTimeoutMs(schemaName: string) {
-  const defaultTimeout = schemaName === "research_intelligence_output" ? 75_000 : 55_000;
+function googleRequestIntervalMs() {
+  // Keep concurrent agents from bursting requests while avoiding the former
+  // 13-second serialization that made six-stage demo runs appear stalled.
+  const configured = Number(process.env.GEMINI_MIN_REQUEST_INTERVAL_MS ?? 3_500);
+  return Number.isFinite(configured) ? Math.max(0, configured) : 3_500;
+}
+
+export function googleMaxConcurrentRequests() {
+  const configured = Number(process.env.GEMINI_MAX_CONCURRENT_REQUESTS ?? 2);
+  return Number.isFinite(configured) ? Math.max(1, Math.min(4, Math.floor(configured))) : 2;
+}
+
+export function googleRequestTimeoutMs(schemaName: string, attempt = 0) {
+  const defaultTimeout = schemaName === "research_intelligence_output"
+    ? attempt === 0 ? 30_000 : 22_000
+    : 45_000;
   const configured = Number(process.env.GEMINI_REQUEST_TIMEOUT_MS ?? defaultTimeout);
   return Number.isFinite(configured) ? Math.max(10_000, configured) : defaultTimeout;
 }
 
-function googleOutputTokenBudget(schemaName: string) {
-  if (schemaName === "research_intelligence_output") return 6_144;
-  if (schemaName === "debate_consensus_output") return 4_096;
-  return 3_072;
+export function googleOutputTokenBudget(schemaName: string, attempt = 0) {
+  const initialBudget = schemaName === "research_intelligence_output"
+    ? 6_144
+    : schemaName === "debate_consensus_output"
+      ? 4_096
+      : 3_072;
+  return attempt > 0 ? Math.round(initialBudget * 1.5) : initialBudget;
 }
 
 function logModelAttempt(

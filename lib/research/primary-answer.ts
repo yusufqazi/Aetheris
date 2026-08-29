@@ -1,4 +1,5 @@
 import { areOverlappingClinicalConclusions } from "@/lib/research/finding-deduplication";
+import { proseQualityIssues } from "@/lib/research/semantic-quality";
 
 const SECTION_LABEL = /(?:primary answer|answer|diagnosis|assessment|conclusion|summary|findings?|efficacy|safety|treatment priority|management priority|key trade-?off|main uncertainty|remaining evidence|evidence needed|limitations?|study context)/i;
 const SECTION_ONLY = /^(?:primary answer|answer|diagnosis|assessment|conclusion|summary|findings?|efficacy|safety|treatment priority|management priority|key trade-?off|main uncertainty|remaining evidence|evidence needed|limitations?|study context)[.:]?$/i;
@@ -54,6 +55,11 @@ export function primaryAnswerQualityIssues(
   const issues: string[] = [];
   if (!normalized) issues.push("empty");
   if (containsPrimaryAnswerSourceLeakage(normalized)) issues.push("source-text-leakage");
+  issues.push(...proseQualityIssues(normalized));
+  const sentences = splitSentences(normalized);
+  if (sentences.some((sentence) => !isCompleteAnswerSentence(sentence))) {
+    issues.push("incomplete-sentence");
+  }
   if (options.singleDocument) {
     const sentenceCount = countPrimaryAnswerSentences(normalized);
     if (sentenceCount < 2 || sentenceCount > 4) {
@@ -115,10 +121,7 @@ export function polishPrimaryAnswerFluency(value: string) {
       if (/^(?:factors?|findings?|considerations?|evidence|summary|assessment)\b/i.test(sentence)) {
         continue;
       }
-      if (accepted.length > 0) {
-        accepted[accepted.length - 1] = joinFragment(accepted.at(-1)!, sentence);
-        continue;
-      }
+      if (accepted.length > 0) continue;
       accepted.push(ensureTerminalPunctuation(
         `The evidence identifies ${sentence.charAt(0).toLowerCase()}${sentence.slice(1).replace(/[.!?]+$/, "")}`,
       ));
@@ -197,20 +200,30 @@ function isAwkwardFragment(value: string) {
   const words = value.match(/[A-Za-z0-9][A-Za-z0-9'-]*/g) ?? [];
   if (words.length === 0) return true;
   if (SECTION_ONLY.test(value)) return true;
+  if (/^(?:start|begin|initiate|continue|administer|hold|withhold|defer|delay|stop|avoid|monitor|obtain|repeat)\b/i.test(value)) {
+    return false;
+  }
   if (words.length > 7) return false;
-  return !/\b(?:is|are|was|were|has|have|had|should|may|might|can|could|will|would|supports?|indicates?|shows?|confirms?|requires?|remains?|improves?|improved|increases?|increased|decreases?|decreased|worsens?|worsened|depends?)\b/i.test(value);
-}
-
-function joinFragment(previous: string, fragment: string) {
-  const base = previous.replace(/[.!?]+$/, "");
-  const continuation = fragment.charAt(0).toLowerCase() + fragment.slice(1);
-  return ensureTerminalPunctuation(`${base}; ${continuation}`);
+  return !/\b(?:is|are|was|were|has|have|had|should|may|might|can|could|cannot be excluded|will|would|supports?|indicates?|shows?|confirms?|requires?|remains?|improves?|improved|increases?|increased|decreases?|decreased|worsens?|worsened|depends?)\b/i.test(value);
 }
 
 function ensureTerminalPunctuation(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return "";
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+function isCompleteAnswerSentence(value: string) {
+  const sentence = value.replace(/[.!?]+$/, "").trim();
+  const words = sentence.match(/[A-Za-z0-9][A-Za-z0-9'-]*/g) ?? [];
+  if (words.length < 4) return false;
+  if (/\b(?:and|or|that|which|because|with|without|from|to|of|for|by)\s*[,;:.-]*$/i.test(sentence)) {
+    return false;
+  }
+  if (/^(?:start|begin|initiate|continue|administer|hold|withhold|defer|delay|stop|avoid|monitor|obtain|repeat)\b/i.test(sentence)) {
+    return true;
+  }
+  return /\b(?:is|are|was|were|has|have|had|does|do|did|may|might|can|could|cannot be excluded|should|will|would|remains?|appears?|suggests?|supports?|indicates?|shows?|confirms?|requires?|recommends?|favors?|states?|documents?|identifies?|increases?|increased|decreases?|decreased|improves?|improved|worsens?|worsened|persists?|persisted|depends?)\b/i.test(sentence);
 }
 
 function extractInterpretiveClinicalClauses(value: string) {

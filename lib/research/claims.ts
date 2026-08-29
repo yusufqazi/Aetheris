@@ -8,14 +8,22 @@ import { isClinicallyMaterialRecommendation } from "@/lib/research/grounding";
 import { assessEvidenceConfidence } from "@/lib/research/confidence";
 import { createClinicalFindingTitle } from "@/lib/research/finding-titles";
 import {
+  classifyStatementRole,
+  isNeutralPositionStatement,
+  recommendationsMateriallyConflict,
+} from "@/lib/research/conflict-semantics";
+import { claimEvidenceAlignmentIssues } from "@/lib/research/semantic-quality";
+import {
   isGeneratedFindingReviewable,
   polishGeneratedFinding,
 } from "@/lib/research/finding-wording";
 import {
   evidenceNeededForOpenQuestion,
+  openQuestionsFromMissingEvidence,
   openQuestionImpact,
 } from "@/lib/research/open-questions";
 import type {
+  DebateConsensusOutput,
   EvidenceItem,
   GroundedFact,
   ResearchAnswerDimension,
@@ -97,6 +105,7 @@ export function buildFallbackResearchIntelligence({
   directAnswer,
   uncertainties,
   followUpQuestions,
+  consensus,
 }: {
   question: string;
   facts: GroundedFact[];
@@ -104,6 +113,7 @@ export function buildFallbackResearchIntelligence({
   directAnswer: string;
   uncertainties: string[];
   followUpQuestions: string[];
+  consensus?: Pick<DebateConsensusOutput, "disagreements" | "missingEvidence">;
 }): ResearchIntelligence {
   const structuredClaims = buildStructuredResearchClaims({ question, facts, evidence });
   const requested = requestedAnswerDimensions(question);
@@ -113,6 +123,11 @@ export function buildFallbackResearchIntelligence({
     : requested.every((dimension) => covered.has(dimension))
       ? "direct"
       : "partial";
+
+  const unresolvedQuestions = deduplicateDecisionQuestions([
+    ...followUpQuestions,
+    ...(consensus?.missingEvidence ?? []).flatMap(openQuestionsFromMissingEvidence),
+  ]).slice(0, 4);
 
   return {
     answerStatus,
@@ -136,7 +151,7 @@ export function buildFallbackResearchIntelligence({
         evidenceIds: claim.evidenceIds,
       })),
     contradictions: buildFallbackContradictions(facts, evidence),
-    decisionChangingUnknowns: followUpQuestions.slice(0, 6).map((unknown, index) => {
+    decisionChangingUnknowns: unresolvedQuestions.map((unknown, index) => {
       const evidenceIds = evidenceIdsForQuestion(unknown, facts);
       const relatedFacts = facts.filter((fact) => evidenceIds.includes(fact.evidenceId));
       return {
@@ -160,6 +175,7 @@ export function buildFallbackContradictions(
   const validEvidenceIds = new Set(evidence.flatMap((item) => [item.id, item.chunkId]));
   const candidates = facts.filter((fact) =>
     validEvidenceIds.has(fact.evidenceId) &&
+    !isNeutralPositionStatement(fact.text) &&
     !["unresolved_question", "evidence_excerpt", "longitudinal_change"].includes(fact.contentType),
   );
   const contradictions: ResearchContradiction[] = [];
@@ -170,34 +186,21 @@ export function buildFallbackContradictions(
       const right = candidates[rightIndex];
       if (left.documentId === right.documentId || !factsShareConflictSubject(left, right)) continue;
 
-      const leftText = `${left.text} ${left.excerpt}`;
-      const rightText = `${right.text} ${right.excerpt}`;
-      const leftAction = localRecommendationAction(leftText);
-      const rightAction = localRecommendationAction(rightText);
-      const leftConcern = localMaterialConcern(leftText);
-      const rightConcern = localMaterialConcern(rightText);
+      const leftText = left.text;
+      const rightText = right.text;
       const leftPolarity = localEvidencePolarity(leftText);
       const rightPolarity = localEvidencePolarity(rightText);
 
-      const recommendationConflict = Boolean(
-        leftAction && rightAction && localActionsConflict(leftAction, rightAction),
-      );
-      const benefitRiskTension = Boolean(
-        (leftAction === "proceed" && rightConcern) ||
-        (rightAction === "proceed" && leftConcern) ||
-        (leftPolarity === "positive" && rightConcern) ||
-        (rightPolarity === "positive" && leftConcern),
-      );
+      const recommendationConflict = recommendationsMateriallyConflict(leftText, rightText);
       const outcomeConflict = Boolean(
+        left.category === right.category &&
         leftPolarity && rightPolarity && leftPolarity !== rightPolarity,
       );
-      if (!recommendationConflict && !benefitRiskTension && !outcomeConflict) continue;
+      if (!recommendationConflict && !outcomeConflict) continue;
 
       const issue = recommendationConflict
         ? `${left.documentName} and ${right.documentName} recommend materially different actions for the same decision.`
-        : benefitRiskTension
-          ? `${left.documentName} and ${right.documentName} emphasize a benefit-risk tradeoff that must be reconciled.`
-          : `${left.documentName} and ${right.documentName} report different outcome directions for the same subject.`;
+        : `${left.documentName} and ${right.documentName} report different outcome directions for the same subject.`;
       const evidenceIds = [left.evidenceId, right.evidenceId];
       if (contradictions.some((item) =>
         evidenceIds.every((id) => item.evidenceIds.includes(id)) ||
@@ -207,14 +210,10 @@ export function buildFallbackContradictions(
       contradictions.push({
         issue,
         sourcePositions: [left.text, right.text],
-        reconciliation: benefitRiskTension
-          ? "The positions may both be valid: one source supports the expected benefit or urgency, while the other identifies a constraint that changes how the action should be carried out."
-          : "The source context, timing, and decision threshold must be compared before either position is treated as controlling.",
+        reconciliation: "The source context, timing, and decision threshold must be compared before either position is treated as controlling.",
         impact: recommendationConflict
           ? "The disagreement changes the next action and should be resolved before presenting one recommendation as settled."
-          : benefitRiskTension
-            ? "The potential benefit cannot be interpreted independently of the documented risk because the tradeoff may change timing, intensity, or feasibility."
-            : "The conclusion depends on which source and context best represent the decision under review.",
+          : "The conclusion depends on which source and context best represent the decision under review.",
         evidenceIds,
       });
       if (contradictions.length >= 5) return contradictions;
@@ -222,31 +221,6 @@ export function buildFallbackContradictions(
   }
 
   return contradictions;
-}
-
-type LocalRecommendationAction = "proceed" | "delay" | "stop" | "restrict" | "monitor";
-
-function localRecommendationAction(text: string): LocalRecommendationAction | null {
-  if (/\b(?:delay\w*|defer\w*|postpone\w*|hold|held|withhold\w*|wait|pending)\b/i.test(text)) return "delay";
-  if (/\b(?:stop\w*|discontinu\w*|cease\w*|do not use|avoid\w*|contraindicat\w*|not recommend\w*)\b/i.test(text)) return "stop";
-  if (/\b(?:restrict\w*|dose reduction|lower dose|conditional)\b/i.test(text)) return "restrict";
-  if (/\b(?:monitor\w*|surveillance|repeat|recheck|follow-up testing)\b/i.test(text)) return "monitor";
-  if (/\b(?:start\w*|initiat\w*|begin|began|continue\w*|proceed\w*|approve\w*|recommend\w*|support\w* use|favor\w*)\b/i.test(text)) return "proceed";
-  return null;
-}
-
-function localActionsConflict(left: LocalRecommendationAction, right: LocalRecommendationAction) {
-  if (left === right) return false;
-  return (
-    (left === "proceed" && ["delay", "stop", "restrict"].includes(right)) ||
-    (right === "proceed" && ["delay", "stop", "restrict"].includes(left)) ||
-    (left === "stop" && ["delay", "restrict"].includes(right)) ||
-    (right === "stop" && ["delay", "restrict"].includes(left))
-  );
-}
-
-function localMaterialConcern(text: string) {
-  return /\b(?:risk|concern|hazard|contraindicat\w*|unsafe|complication\w*|worsen\w*|deteriorat\w*|overload|edema|infeasible|technically difficult|high technical risk)\b/i.test(text);
 }
 
 function localEvidencePolarity(text: string) {
@@ -264,9 +238,29 @@ function factsShareConflictSubject(left: GroundedFact, right: GroundedFact) {
     "action", "assessment", "care", "decision", "diagnosis", "management", "recommendation",
     "risk", "safety", "therapy", "treatment",
   ]);
-  const leftTopics = semanticTopics(`${left.text} ${left.excerpt}`).filter((topic) => !ignored.has(topic));
-  const rightTopics = semanticTopics(`${right.text} ${right.excerpt}`).filter((topic) => !ignored.has(topic));
+  const leftTopics = semanticTopics(left.text).filter((topic) => !ignored.has(topic));
+  const rightTopics = semanticTopics(right.text).filter((topic) => !ignored.has(topic));
   return leftTopics.some((topic) => rightTopics.includes(topic));
+}
+
+function deduplicateDecisionQuestions(questions: string[]) {
+  const accepted: string[] = [];
+  for (const question of unique(questions)) {
+    const topics = normalizedQuestionTopics(question);
+    if (accepted.some((candidate) => {
+      const candidateTopics = normalizedQuestionTopics(candidate);
+      const shared = topics.filter((topic) => candidateTopics.includes(topic));
+      return shared.length >= 2 && shared.length >= Math.min(topics.length, candidateTopics.length) * 0.4;
+    })) continue;
+    accepted.push(question);
+  }
+  return accepted;
+}
+
+function normalizedQuestionTopics(question: string) {
+  return semanticTopics(question).map((topic) =>
+    topic.length > 5 && topic.endsWith("s") ? topic.slice(0, -1) : topic
+  );
 }
 
 function groupFactsForClaims(facts: GroundedFact[]) {
@@ -450,8 +444,18 @@ function claimMatchesFact(claim: StructuredResearchClaim, fact: GroundedFact) {
   const shared = targetTokens.filter((token) => sourceTokens.includes(token));
   const targetNumbers: string[] = `${claim.conclusion} ${claim.reasoningSummary}`.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
   const sourceNumbers: string[] = sourceText.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
-  return shared.length >= 2 &&
-    (targetNumbers.length === 0 || targetNumbers.every((value) => sourceNumbers.includes(value)));
+  if (
+    shared.length < 2 ||
+    (targetNumbers.length > 0 && !targetNumbers.every((value) => sourceNumbers.includes(value))) ||
+    claimEvidenceAlignmentIssues(claim.conclusion, sourceText).length > 0
+  ) return false;
+  const claimRole = classifyStatementRole(claim.conclusion);
+  const sourceRole = classifyStatementRole(sourceText);
+  if (
+    ["recommendation_for", "recommendation_against"].includes(claimRole) &&
+    claimRole !== sourceRole
+  ) return false;
+  return true;
 }
 
 function normalizeClaimConclusion(text: string) {

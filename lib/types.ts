@@ -234,6 +234,7 @@ export interface GroundedFact {
   evidenceId: string;
   documentId: string;
   documentName: string;
+  sourceSection?: string;
   page?: number | null;
   excerpt: string;
   relevance: string;

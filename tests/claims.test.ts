@@ -33,7 +33,7 @@ describe("structured research claims", () => {
     expect(claims.some((claim) => claim.clinicalImplication?.includes("weighed") || claim.clinicalImplication?.includes("confidence"))).toBe(true);
   });
 
-  it("preserves a source-grounded benefit-risk tradeoff in local fallback intelligence", () => {
+  it("does not misclassify a recommendation and a safety concern as a conflict", () => {
     const records: Array<{ type: ResearchContentType; text: string }> = [
       {
         type: "recommendation",
@@ -55,9 +55,7 @@ describe("structured research claims", () => {
       followUpQuestions: [],
     });
 
-    expect(intelligence.contradictions).toHaveLength(1);
-    expect(intelligence.contradictions[0].issue).toMatch(/benefit-risk tradeoff/i);
-    expect(intelligence.contradictions[0].evidenceIds).toEqual(["evidence:0", "evidence:1"]);
+    expect(intelligence.contradictions).toEqual([]);
   });
 
   it("does not mislabel a shared uncertainty as a conflict", () => {

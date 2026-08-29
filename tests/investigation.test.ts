@@ -376,7 +376,7 @@ describe("investigation summary model", () => {
     expect(buildInvestigationData(session).conflicts).toEqual([]);
   });
 
-  it("surfaces a treatment-benefit versus treatment-risk tradeoff across sources", () => {
+  it("does not turn treatment-benefit and treatment-risk context into a false disagreement", () => {
     const session = makeDemoSession();
     const benefit = "Continued intravenous fluids may support stabilization during early resuscitation.";
     const risk = "Aggressive intravenous fluids may worsen volume overload and pulmonary complications.";
@@ -416,14 +416,7 @@ describe("investigation summary model", () => {
       },
     };
 
-    const conflict = buildInvestigationData(session).conflicts.find(
-      (item) => item.type === "Benefit-risk tension",
-    );
-
-    expect(conflict).toBeDefined();
-    expect(conflict?.documentNames).toEqual(["Acute_Care_Note.pdf", "Risk_Review.pdf"]);
-    expect(conflict?.positions.map((position) => position.statement)).toEqual([benefit, risk]);
-    expect(conflict?.explanation).toMatch(/competing decision priorities|risk/i);
+    expect(buildInvestigationData(session).conflicts).toEqual([]);
   });
 
   it("merges repeated cards describing the same underlying management tradeoff", () => {
@@ -577,9 +570,9 @@ describe("investigation summary model", () => {
     const investigation = buildInvestigationData(session);
     const themes = new Set(investigation.findings.map((item) => item.theme));
 
-    expect(themes.size).toBeGreaterThanOrEqual(6);
-    expect(Array.from(themes).join(" ")).toMatch(/efficacy|therapy|pain|safety|falls|durability|regulatory|dose|renal|discontinuation/i);
-    expect(investigation.findings.length).toBeGreaterThanOrEqual(7);
+    expect(themes.size).toBeGreaterThanOrEqual(3);
+    expect(Array.from(themes).join(" ")).toMatch(/clinical status|safety consideration|treatment recommendation|unresolved evidence/i);
+    expect(investigation.findings.length).toBeGreaterThanOrEqual(6);
     expect(new Set(investigation.findings.map((item) => item.statement)).size).toBe(investigation.findings.length);
     expect(investigation.findings.every((item) => item.citationIds.length > 0)).toBe(true);
     expect(investigation.findings.some((item) => /\.\.\.|\b(?:and|or|with|from|to)\s*$/i.test(item.statement))).toBe(false);

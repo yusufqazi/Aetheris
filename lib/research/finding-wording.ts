@@ -2,6 +2,7 @@ import {
   paraphrasePrimaryAnswerEvidence,
   polishPrimaryAnswerFluency,
 } from "@/lib/research/primary-answer";
+import { proseQualityIssues } from "@/lib/research/semantic-quality";
 
 const GENERIC_LABEL =
   /^(?:important finding|primary finding|supporting context|finding|assessment(?: and plan)?|impression|diagnosis|conclusion|recommendation|results?|summary|evidence)\s*[:\-]\s*/i;
@@ -10,7 +11,7 @@ const SOURCE_HEADING =
 const MALFORMED_PREFIX =
   /^(?:(?:true\s+disagreement|documentation\s+discrepancy|potential\s+contradiction|outstanding\s+(?:evidence|needs?)|reasoning)\s*[:\-]?\s*)+/i;
 const FINITE_PREDICATE =
-  /\b(?:is|are|was|were|has|have|had|may|might|can|could|should|will|would|remains?|appears?|suggests?|supports?|indicates?|shows?|confirms?|requires?|recommends?|demonstrates?|documents?|identifies?|raises?|increases?|increased|decreases?|decreased|reduces?|reduced|improved|worsened|persisted|resolved|grew|tested|received|underwent|developed)\b/i;
+  /\b(?:is|are|was|were|has|have|had|may|might|can|could|cannot be excluded|should|will|would|remains?|appears?|suggests?|supports?|indicates?|shows?|confirms?|requires?|recommends?|demonstrates?|documents?|identifies?|raises?|increases?|increased|decreases?|decreased|reduces?|reduced|improved|worsened|persisted|resolved|grew|tested|received|underwent|developed)\b/i;
 const IMPERATIVE =
   /^(?:start|begin|initiate|continue|administer|avoid|defer|delay|hold|withhold|stop|monitor|repeat|obtain|confirm|proceed)\b/i;
 const PATIENT_IDENTIFIER =
@@ -21,6 +22,7 @@ const SYNTHETIC_NOTICE =
   /\b(?:synthetic\b.{0,80}\b(?:document|report|record)|testing notice|for (?:testing|demonstration) purposes?|not for clinical use|mock clinical|sample document)\b/i;
 const RAW_FIELD_LABEL =
   /\b(?:patient|mrn|study|study date|report date|region|finding|result|value|status|impression|new lung finding|pleural effusion|distant disease)\b/gi;
+const DOCUMENT_FILE = /\b[^\s,;:()[\]]+\.(?:pdf|docx?|txt|rtf)\b/i;
 
 export function polishGeneratedFinding(statement: string, theme?: string) {
   let value = statement
@@ -39,6 +41,8 @@ export function polishGeneratedFinding(statement: string, theme?: string) {
     .replace(SOURCE_HEADING, "")
     .replace(MALFORMED_PREFIX, "")
     .trim();
+
+  value = repairMechanicalFindingPrefix(value);
 
   const polished = polishPrimaryAnswerFluency(value);
   if (!polished) return "";
@@ -74,6 +78,7 @@ export function containsFindingSourceTextLeakage(statement: string) {
   return PATIENT_IDENTIFIER.test(value) ||
     PATIENT_NAME.test(value) ||
     SYNTHETIC_NOTICE.test(value) ||
+    DOCUMENT_FILE.test(value) ||
     flattenedRow;
 }
 
@@ -84,6 +89,7 @@ export function generatedFindingQualityIssues(statement: string) {
   if (!value || words.length < 5) issues.push("too-short");
   if (words.length > 80) issues.push("too-long");
   if (containsFindingSourceTextLeakage(value)) issues.push("source-text-leakage");
+  issues.push(...proseQualityIssues(value));
   if (/\.\.\.|…/.test(value) || /\b(?:and|or|that|which|because|with|from|to|of)\s*[,;:.-]*$/i.test(value)) {
     issues.push("incomplete");
   }
@@ -97,6 +103,14 @@ export function generatedFindingQualityIssues(statement: string) {
     issues.push("no-clinical-predicate");
   }
   return Array.from(new Set(issues));
+}
+
+function repairMechanicalFindingPrefix(value: string) {
+  const embeddedModal = value.match(
+    /^(?:the\s+)?evidence\s+(?:identifies|documents|shows|indicates)\s+(.{4,180}?)\s+(cannot be excluded|could not be excluded|remains? (?:possible|plausible|uncertain|unconfirmed|unresolved))([.!?]?)$/i,
+  );
+  if (!embeddedModal) return value;
+  return `${embeddedModal[1]} ${embeddedModal[2]}${embeddedModal[3] || "."}`;
 }
 
 export function isGeneratedFindingReviewable(statement: string) {

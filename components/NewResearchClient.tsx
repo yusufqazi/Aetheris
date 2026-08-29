@@ -1,8 +1,8 @@
 "use client";
 
 import { nanoid } from "nanoid";
-import { ArrowRight, CheckCircle2, FileSearch, Quote, Sparkles } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ArrowRight, CheckCircle2, FileSearch, LoaderCircle, Quote, Sparkles } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import { FileUploader } from "@/components/FileUploader";
 import { WorkspacePageHeader } from "@/components/workspace/WorkspacePageHeader";
@@ -53,6 +53,7 @@ export function NewResearchClient() {
   const [error, setError] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
   const [capability, setCapability] = useState<AnalysisCapability | null>(null);
+  const submissionLockRef = useRef(false);
 
   useEffect(() => {
     setActiveSessionId(null);
@@ -94,11 +95,13 @@ export function NewResearchClient() {
   }
 
   async function runAnalysis() {
-    if (!canRun || isStarting) {
+    if (!canRun) {
       setError("Add at least one prepared PDF and ask a focused research question.");
       return;
     }
+    if (isStarting || submissionLockRef.current) return;
 
+    submissionLockRef.current = true;
     setError(null);
     setIsStarting(true);
     let session = createResearchSession({
@@ -126,6 +129,7 @@ export function NewResearchClient() {
     try {
       await startAnalysis(session);
     } finally {
+      submissionLockRef.current = false;
       setIsStarting(false);
     }
   }
@@ -221,12 +225,15 @@ export function NewResearchClient() {
             type="button"
             onClick={() => void runAnalysis()}
             disabled={!canRun || isStarting}
+            aria-busy={isStarting}
             className="group mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[linear-gradient(135deg,#1d4ed8,#60a5fa)] px-5 text-sm font-semibold text-white shadow-[0_18px_52px_rgba(37,99,235,0.28)] transition duration-300 hover:-translate-y-px hover:shadow-[0_22px_60px_rgba(37,99,235,0.4)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0"
           >
             {isStarting
               ? capability?.mode === "live" ? "Running six-agent analysis..." : "Extracting evidence locally..."
               : capability?.mode === "live" ? "Run six-agent analysis" : "Extract evidence locally"}
-            <ArrowRight className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-0.5" />
+            {isStarting
+              ? <LoaderCircle className="h-4 w-4 animate-spin" />
+              : <ArrowRight className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-0.5" />}
           </button>
           <p className="mt-3 text-center text-[10px] leading-5 text-slate-700">
             Research support only. Important conclusions should be independently reviewed.

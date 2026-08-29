@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { createEventFactory, type ResearchEventInput } from "@/lib/research/events";
 import { runResearchPipeline } from "@/lib/research/pipeline";
 import { applyResearchEvent } from "@/lib/research/session";
+import { toUserFacingResearchError } from "@/lib/research/user-facing-errors";
 import { saveSessionToSupabase } from "@/lib/supabase";
 import type { ResearchEvent, ResearchSession } from "@/lib/types";
 
@@ -71,8 +72,12 @@ export async function runRegisteredResearchJob(
     job.session = applyResearchEvent(job.session, event);
 
     if (
+      event.type === "analysis.mode" ||
+      event.type === "stage.started" ||
       event.type === "stage.completed" ||
+      event.type === "agent.started" ||
       event.type === "agent.completed" ||
+      event.type === "agent.failed" ||
       event.type === "session.completed" ||
       event.type === "session.failed"
     ) {
@@ -85,13 +90,23 @@ export async function runRegisteredResearchJob(
     await runResearchPipeline({ session: job.session, emit });
     job.status = "completed";
   } catch (error) {
-    const researchError = {
+    const activeStage = job.session.pipeline.find((stage) => stage.status === "running")?.id ?? null;
+    const researchError = toUserFacingResearchError(error, {
       code: "PIPELINE_FAILED",
-      title: "Research pipeline interrupted",
-      message: "Aetheris preserved the completed work, but the research run did not finish.",
-      retryable: true,
-      details: error instanceof Error ? error.message : "Unknown pipeline error",
-    };
+      stageId: activeStage,
+      defaultTitle: "Research pipeline interrupted",
+      defaultMessage: "Aetheris preserved the completed work, but the research run did not finish.",
+    });
+
+    if (activeStage) {
+      await emit({
+        type: "stage.failed",
+        phase: "error",
+        stageId: activeStage,
+        message: researchError.message,
+        data: { error: researchError },
+      });
+    }
 
     await emit({
       type: "session.failed",
@@ -131,4 +146,3 @@ function pruneJobs() {
     }
   }
 }
-

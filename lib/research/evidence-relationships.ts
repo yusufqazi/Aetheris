@@ -11,6 +11,7 @@ import type {
   ResearchEvidenceMapping,
   UploadedDocument,
 } from "@/lib/types";
+import { claimEvidenceAlignmentIssues } from "@/lib/research/semantic-quality";
 
 type EvidenceTargetKind = "finding" | "open_question" | "conflict" | "change";
 
@@ -72,7 +73,7 @@ export function buildEvidenceRelationships({
       quote: span.quote,
     });
     const compatibility = evidenceCompatibility(targetText, span.quote, fact, targetKind);
-    if (!aiMapping && !compatibility.relevant) continue;
+    if (compatibility.blocked || (!aiMapping && !compatibility.relevant)) continue;
 
     const relationshipType = aiMapping?.relationshipType
       ?? relationshipTypeFor(fact, targetKind, span.quote);
@@ -137,6 +138,8 @@ function evidenceCompatibility(
 ) {
   const targetTopics = semanticTopics(targetText);
   const evidenceText = `${quote} ${fact?.text ?? ""}`;
+  const blocked = targetKind === "finding" &&
+    claimEvidenceAlignmentIssues(targetText, evidenceText).length > 0;
   const evidenceTopics = semanticTopics(evidenceText);
   const sharedTopics = targetTopics.filter((topic) => evidenceTopics.includes(topic));
 
@@ -150,7 +153,8 @@ function evidenceCompatibility(
     const minimumOverlap = targetKind === "open_question" && targetTopics.length > 3 ? 2 : 1;
     const relevant = numericMatch && sharedTopics.length >= minimumOverlap && ratio >= 0.2;
     return {
-      relevant,
+      relevant: relevant && !blocked,
+      blocked,
       confidence: relevant && sharedTopics.length >= 3 ? "high" as const : "medium" as const,
     };
   }
@@ -161,7 +165,8 @@ function evidenceCompatibility(
   const ratio = overlap / Math.max(1, targetTokens.length);
   const threshold = targetKind === "open_question" ? 0.42 : 0.3;
   return {
-    relevant: overlap >= 2 && ratio >= threshold,
+    relevant: overlap >= 2 && ratio >= threshold && !blocked,
+    blocked,
     confidence: ratio >= 0.65 ? "high" as const : "medium" as const,
   };
 }
@@ -172,7 +177,9 @@ function relationshipTypeFor(
   quote: string,
 ): EvidenceRelationshipType {
   if (fact?.contentType === "discrepancy") return "contradicts";
-  if (fact?.contentType === "recommendation") return "proposes_follow_up";
+  if (fact?.contentType === "recommendation") {
+    return targetKind === "open_question" ? "proposes_follow_up" : "supports";
+  }
   if (fact?.contentType === "limitation" || /\b(?:missing|not (?:measured|excluded|available)|remains? unknown|unresolved)\b/i.test(quote)) {
     return targetKind === "open_question" ? "identifies_missing_evidence" : "weakens";
   }

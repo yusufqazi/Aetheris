@@ -14,6 +14,8 @@ import {
   assessPrimaryAnswerEvidence,
   buildGroundedReport,
   isIncompletePrimaryAnswer,
+  primaryAnswerConsistencyIssues,
+  primaryAnswerCoverageIssues,
 } from "@/lib/research/grounding";
 import {
   buildClaimEvidenceMappings,
@@ -25,7 +27,10 @@ import {
 } from "@/lib/research/intelligence";
 import { researchDirectorOutputSchema } from "@/lib/research/schemas";
 import { semanticFamily, semanticTopics } from "@/lib/research/evidence-relationships";
-import { isGenericOpenQuestion } from "@/lib/research/open-questions";
+import {
+  isGenericOpenQuestion,
+  openQuestionQualityIssues,
+} from "@/lib/research/open-questions";
 import {
   containsPrimaryAnswerSourceLeakage,
   primaryAnswerQualityIssues,
@@ -45,8 +50,10 @@ export async function runReportAgent(payload: {
   evidence: EvidenceItem[];
   normalizedEvidence: NormalizedEvidenceBundle;
   onFallback?: FallbackObserver;
+  shouldUseProvider?: () => boolean;
+  onAssemblyRecovery?: (error: unknown) => void | Promise<void>;
 }) {
-  const { question, facts, evidence, onFallback } = payload;
+  const { question, facts, evidence, onFallback, shouldUseProvider } = payload;
   const primaryAnswerCoverage = assessPrimaryAnswerEvidence(question, facts);
   const sourceDocumentCount = new Set(evidence.map((item) => item.documentId)).size;
   const groundedReport = buildGroundedReport({ question, facts, evidence });
@@ -57,6 +64,7 @@ export async function runReportAgent(payload: {
     directAnswer: groundedReport.executiveSummary,
     uncertainties: groundedReport.risksAndUncertainties,
     followUpQuestions: groundedReport.recommendedFollowUpQuestions,
+    consensus: payload.debate,
   });
   const modelPayload = {
     question,
@@ -65,6 +73,7 @@ export async function runReportAgent(payload: {
       requestedParts: primaryAnswerCoverage.requestedParts,
       supportedParts: primaryAnswerCoverage.supportedParts,
       unsupportedParts: primaryAnswerCoverage.unsupportedParts,
+      partStatus: primaryAnswerCoverage.partStatus,
     },
     primaryAnswerCandidates: primaryAnswerCoverage.eligibleFacts.map((fact) => ({
       contentType: fact.contentType,
@@ -111,36 +120,76 @@ export async function runReportAgent(payload: {
 
   type ResearchDirectorOutput = z.infer<typeof researchDirectorOutputSchema>;
   const fallbackDirectorOutput = toResearchDirectorOutput(fallbackIntelligence);
-  const generatedDirectorOutput = await runStructuredGeneration<ResearchDirectorOutput>({
-    system: getAgentPrompt("report-generation"),
-    user: JSON.stringify(modelPayload),
-    schema: researchDirectorOutputSchema,
-    schemaName: "research_intelligence_output",
-    qualityCheck: (output) => {
-      const primaryAnswerIssues = primaryAnswerQualityIssues(output.directAnswer, {
-        singleDocument: sourceDocumentCount <= 1,
-      });
-      if (primaryAnswerIssues.length > 0) {
-        return {
-          valid: false,
-          reason: primaryAnswerIssues.map((issue) => `direct-answer-${issue}`).join(", "),
-        };
-      }
-      const issues = researchIntelligenceGroundingIssues(
-        toResearchIntelligence(output, fallbackIntelligence, facts, question),
-        evidence,
-        question,
-      );
-      return { valid: issues.length === 0, reason: issues.join(", ") };
-    },
-    onFallback,
-    fallback: () => fallbackDirectorOutput,
-  });
+  let generatedDirectorOutput: ResearchDirectorOutput;
+  try {
+    generatedDirectorOutput = await runStructuredGeneration<ResearchDirectorOutput>({
+      system: getAgentPrompt("report-generation"),
+      user: JSON.stringify(modelPayload),
+      schema: researchDirectorOutputSchema,
+      schemaName: "research_intelligence_output",
+      qualityCheck: (output) => {
+        const primaryAnswerIssues = primaryAnswerQualityIssues(output.directAnswer, {
+          singleDocument: sourceDocumentCount <= 1,
+        });
+        if (primaryAnswerIssues.length > 0) {
+          return {
+            valid: false,
+            reason: primaryAnswerIssues.map((issue) => `direct-answer-${issue}`).join(", "),
+          };
+        }
+        const coverageIssues = primaryAnswerCoverageIssues(output.directAnswer, question, facts);
+        const consistencyIssues = primaryAnswerConsistencyIssues(output.directAnswer, question, facts);
+        if (coverageIssues.length > 0 || consistencyIssues.length > 0) {
+          return {
+            valid: false,
+            reason: [...coverageIssues, ...consistencyIssues]
+              .map((issue) => `direct-answer-${issue}`)
+              .join(", "),
+          };
+        }
+        const issues = researchIntelligenceGroundingIssues(
+          toResearchIntelligence(output, fallbackIntelligence, facts, question),
+          evidence,
+          question,
+        );
+        return { valid: issues.length === 0, reason: issues.join(", ") };
+      },
+      onFallback,
+      shouldUseProvider,
+      maxAttempts: 2,
+      fallback: () => fallbackDirectorOutput,
+    });
+  } catch (error) {
+    // The specialist and consensus calls have already completed by this point.
+    // Preserve that live AI work and finish its grounded presentation
+    // instead of failing the entire run because the final formatting call lost
+    // its network connection.
+    await payload.onAssemblyRecovery?.(error);
+    generatedDirectorOutput = {
+      ...fallbackDirectorOutput,
+      directAnswer: payload.debate.finalConsensus.trim() || fallbackDirectorOutput.directAnswer,
+    };
+  }
 
-  const researchIntelligence = sanitizeResearchIntelligence({
+  const sanitizedIntelligence = sanitizeResearchIntelligence({
     ...toResearchIntelligence(generatedDirectorOutput, fallbackIntelligence, facts, question),
   }, evidence)
     ?? fallbackIntelligence;
+  const researchIntelligence = primaryAnswerConsistencyIssues(
+    sanitizedIntelligence.directAnswer,
+    question,
+    facts,
+  ).length > 0
+    ? {
+        ...sanitizedIntelligence,
+        directAnswer: completeDirectAnswer(
+          payload.debate.finalConsensus,
+          fallbackIntelligence.directAnswer,
+          question,
+          facts,
+        ),
+      }
+    : sanitizedIntelligence;
   const synthesizedReport = buildGroundedReport({
     question,
     facts,
@@ -275,7 +324,8 @@ function completeDirectAnswer(
     containsPrimaryAnswerNoise(candidate) ||
     containsPrimaryAnswerSourceLeakage(candidate) ||
     copiesSourcePassage(candidate, facts) ||
-    !coversRequestedPrimaryAnswer(candidate, question, facts)
+    primaryAnswerCoverageIssues(candidate, question, facts).length > 0 ||
+    primaryAnswerConsistencyIssues(candidate, question, facts).length > 0
   ) {
     return fallback;
   }
@@ -305,28 +355,6 @@ function copiesSourcePassage(answer: string, facts: GroundedFact[]) {
     }
     return false;
   });
-}
-
-function coversRequestedPrimaryAnswer(
-  answer: string,
-  question: string,
-  facts: GroundedFact[],
-) {
-  const asksDiagnosis = /\b(?:diagnos|etiology|cause|leading interpretation|best supported)\w*\b/i.test(question);
-  const asksTreatment = /\b(?:treat|management|therapy|medication|priority|proceed|begin|start|defer|delay|hold)\w*\b/i.test(question);
-  const asksTradeoff = /\b(?:tradeoff|trade-off|risk|benefit|harm|constraint|balance)\w*\b/i.test(question);
-  const asksRemaining = /\b(?:remaining|missing|unresolved|uncertain|evidence still needed|open question)\w*\b/i.test(question);
-  const hasDiagnosis = facts.some((fact) => /\b(?:diagnos|leading interpretation|strongly support|confirmed)\w*\b/i.test(fact.text));
-  const hasTreatment = facts.some((fact) => fact.contentType === "recommendation");
-  const hasTradeoff = facts.some((fact) =>
-    ["interaction_concern", "safety_observation", "discrepancy"].includes(fact.contentType),
-  );
-
-  if (asksDiagnosis && hasDiagnosis && !/\b(?:diagnos|supports?|indicates?|consistent with|most likely|leading)\w*\b/i.test(answer)) return false;
-  if (asksTreatment && hasTreatment && !/\b(?:manage|prioriti|initiat|start|begin|continue|defer|delay|hold|avoid|administer|monitor|should)\w*\b/i.test(answer)) return false;
-  if (asksTradeoff && hasTradeoff && !/\b(?:balanc|tradeoff|trade-off|against|while|risk|constraint|limit)\w*\b/i.test(answer)) return false;
-  if (asksRemaining && !/\b(?:depend|pending|remain|uncertain|unresolved|clarif|confirm|completion|no specific)\w*\b/i.test(answer)) return false;
-  return true;
 }
 
 function normalizeWords(value: string) {
@@ -379,6 +407,7 @@ function fallbackTheme(dimension: "efficacy" | "safety" | "limitation" | "contex
 function isSpecificResearchQuestion(value: string) {
   const question = value.replace(/\s+/g, " ").trim();
   return question.length >= 24 &&
+    openQuestionQualityIssues(question).length === 0 &&
     !isGenericOpenQuestion(question) &&
     !/^(?:what|which) (?:additional|other|more) (?:source|evidence|information)/i.test(question) &&
     !/reduce uncertainty|strengthen the conclusion|materially change the conclusion|more evidence (?:is|would be) needed/i.test(question);

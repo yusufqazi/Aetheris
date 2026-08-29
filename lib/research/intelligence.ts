@@ -5,16 +5,25 @@ import {
 } from "@/lib/research/evidence-relationships";
 import { areOverlappingClinicalConclusions } from "@/lib/research/finding-deduplication";
 import { assessEvidenceConfidence } from "@/lib/research/confidence";
-import { isGenericOpenQuestion } from "@/lib/research/open-questions";
 import {
+  isGenericOpenQuestion,
+  openQuestionQualityIssues,
+} from "@/lib/research/open-questions";
+import {
+  classifyStatementRole,
+  recommendationsMateriallyConflict,
   sameClinicalQuestion,
-  sameManagementTarget,
   sameOutcomeQuestion,
 } from "@/lib/research/conflict-semantics";
 import {
   containsPrimaryAnswerSourceLeakage,
+  primaryAnswerQualityIssues,
   polishPrimaryAnswerFluency,
 } from "@/lib/research/primary-answer";
+import {
+  claimEvidenceAlignmentIssues,
+  proseQualityIssues,
+} from "@/lib/research/semantic-quality";
 import { createClinicalFindingTitle } from "@/lib/research/finding-titles";
 import {
   generatedFindingQualityIssues,
@@ -106,6 +115,10 @@ export function sanitizeResearchIntelligence(
       .filter((item) =>
         item.unknown.trim().length >= 18 &&
         !isGenericOpenQuestion(item.unknown) &&
+        openQuestionQualityIssues(item.unknown).length === 0 &&
+        completeSupportingText(item.known) &&
+        completeSupportingText(item.evidenceNeeded) &&
+        completeSupportingText(item.whyItMatters) &&
         item.evidenceNeeded.trim().length >= 12 &&
         item.whyItMatters.trim().length >= 12,
       )
@@ -193,9 +206,8 @@ function isGenuineContradiction(
       const left = item.sourcePositions[leftIndex];
       const right = item.sourcePositions[rightIndex];
       if (
-        (sameManagementTarget(left, right) && actionsConflict(left, right)) ||
+        recommendationsMateriallyConflict(left, right) ||
         (sameOutcomeQuestion(left, right) && outcomesConflict(left, right)) ||
-        (sameManagementTarget(left, right) && benefitRiskCompetes(left, right)) ||
         (sameClinicalQuestion(left, right) && uncertaintyDiffers(left, right, item.issue))
       ) {
         return true;
@@ -203,12 +215,6 @@ function isGenuineContradiction(
     }
   }
   return false;
-}
-
-function actionsConflict(left: string, right: string) {
-  const proceed = /\b(?:proceed|start|begin|initiate|continue|approve|recommend)\w*\b/i;
-  const defer = /\b(?:delay|defer|hold|stop|avoid|withhold|contraindicat)\w*\b/i;
-  return (proceed.test(left) && defer.test(right)) || (proceed.test(right) && defer.test(left));
 }
 
 function outcomesConflict(left: string, right: string) {
@@ -222,12 +228,6 @@ function outcomesConflict(left: string, right: string) {
   return (positive.test(left) && negative.test(right)) ||
     (positive.test(right) && negative.test(left)) ||
     differentValues;
-}
-
-function benefitRiskCompetes(left: string, right: string) {
-  const benefit = /\b(?:benefit|improv|stabili|support|proceed|start|continue)\w*\b/i;
-  const risk = /\b(?:risk|harm|unsafe|worsen|complication|toxicity|overload|edema|bleed|arrhythmia)\w*\b/i;
-  return (benefit.test(left) && risk.test(right)) || (benefit.test(right) && risk.test(left));
 }
 
 function uncertaintyDiffers(left: string, right: string, issue: string) {
@@ -272,6 +272,7 @@ export function researchIntelligenceGroundingIssues(
     issues.push("finding-output-malformed");
   }
   if (sanitized.directAnswer.length < 40) issues.push("direct-answer-too-short");
+  issues.push(...primaryAnswerQualityIssues(sanitized.directAnswer).map((issue) => `direct-answer-${issue}`));
   if (!isCompleteStatement(sanitized.directAnswer) || !/[.!?]$/.test(sanitized.directAnswer)) {
     issues.push("direct-answer-incomplete");
   }
@@ -325,5 +326,21 @@ function evidenceSupportsClaim(
   const targetTopics = semanticTopics(target);
   const sourceTopics = semanticTopics(source.excerpt);
   const shared = targetTopics.filter((topic) => sourceTopics.includes(topic));
-  return shared.length >= 1;
+  if (shared.length < 1) return false;
+  if (claimEvidenceAlignmentIssues(claim.conclusion, source.excerpt).length > 0) return false;
+  const targetRole = classifyStatementRole(target);
+  const sourceRole = classifyStatementRole(source.excerpt);
+  if (
+    ["recommendation_for", "recommendation_against"].includes(targetRole) &&
+    !["recommendation_for", "recommendation_against"].includes(sourceRole)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function completeSupportingText(value: string | undefined) {
+  const text = value?.trim() ?? "";
+  if (text.length < 12 || proseQualityIssues(text).length > 0) return false;
+  return !/\b(?:and|or|that|which|because|with|from|to|of|for)\s*[,;:.-]*$/i.test(text);
 }

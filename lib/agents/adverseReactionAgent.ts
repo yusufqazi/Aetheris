@@ -29,10 +29,12 @@ export async function runAdverseReactionAgent({
   question,
   chunks,
   onFallback,
+  shouldUseProvider,
 }: {
   question: string;
   chunks: SearchChunk[];
   onFallback?: FallbackObserver;
+  shouldUseProvider?: () => boolean;
 }) {
   const matched = chunks.filter((chunk) =>
     EVENT_WORDS.some((word) => chunk.text.toLowerCase().includes(word)),
@@ -50,6 +52,7 @@ export async function runAdverseReactionAgent({
     schemaName: "adverse_reaction_output",
     qualityCheck: (output) => hasConcreteContent(output),
     onFallback,
+    shouldUseProvider,
     fallback: () => ({
       agentName: "Adverse Reaction Agent",
       summary:

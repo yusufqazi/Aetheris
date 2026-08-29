@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 
 import { WorkspacePageHeader } from "@/components/workspace/WorkspacePageHeader";
+import { useAuth } from "@/components/auth/AuthProvider";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import type { ResearchEvent, ResearchSession, UploadedDocument } from "@/lib/types";
 
@@ -42,7 +43,8 @@ const VIEW_COPY: Record<DashboardView, { eyebrow: string; title: string; descrip
 };
 
 export function DashboardClient({ view = "sessions" }: { view?: DashboardView }) {
-  const { sessions, hydrated, openDemoSession, deleteSession } = useWorkspace();
+  const { sessions, hydrated, sessionSyncError, openDemoSession, deleteSession } = useWorkspace();
+  const { user } = useAuth();
   const copy = VIEW_COPY[view];
 
   return (
@@ -62,11 +64,24 @@ export function DashboardClient({ view = "sessions" }: { view?: DashboardView })
         }
       />
 
+      {sessionSyncError ? (
+        <div role="alert" className="mt-6 rounded-2xl border border-amber-200/15 bg-amber-100/[0.035] px-4 py-3 text-xs leading-5 text-amber-100/80">
+          <p className="font-medium text-amber-100">Saved sessions could not be loaded.</p>
+          <p className="mt-1 text-amber-100/60">{sessionSyncError} Your local workspace is still available, but this view may not include your Supabase history.</p>
+        </div>
+      ) : null}
+
       <div className="mt-8">
         {!hydrated ? (
           <LoadingWorkspace />
         ) : view === "sessions" ? (
-          <SessionsView sessions={sessions} onOpenDemo={() => void openDemoSession()} onDelete={deleteSession} />
+          <SessionsView
+            sessions={sessions}
+            accountId={user?.id ?? null}
+            accountEmail={user?.email ?? null}
+            onOpenDemo={() => void openDemoSession()}
+            onDelete={deleteSession}
+          />
         ) : view === "documents" ? (
           <DocumentsView sessions={sessions} />
         ) : view === "reports" ? (
@@ -81,15 +96,19 @@ export function DashboardClient({ view = "sessions" }: { view?: DashboardView })
 
 function SessionsView({
   sessions,
+  accountId,
+  accountEmail,
   onOpenDemo,
   onDelete,
 }: {
   sessions: ResearchSession[];
+  accountId: string | null;
+  accountEmail: string | null;
   onOpenDemo: () => void;
   onDelete: (sessionId: string) => Promise<void>;
 }) {
   if (sessions.length === 0) {
-    return <EmptyWorkspace onOpenDemo={onOpenDemo} />;
+    return <EmptyWorkspace accountId={accountId} accountEmail={accountEmail} onOpenDemo={onOpenDemo} />;
   }
 
   const totals = {
@@ -289,7 +308,15 @@ function HistoryRow({ event, session }: { event: ResearchEvent; session: Researc
   );
 }
 
-function EmptyWorkspace({ onOpenDemo }: { onOpenDemo: () => void }) {
+function EmptyWorkspace({
+  accountId,
+  accountEmail,
+  onOpenDemo,
+}: {
+  accountId: string | null;
+  accountEmail: string | null;
+  onOpenDemo: () => void;
+}) {
   return (
     <div className="grid min-h-[34rem] items-center gap-12 py-8 lg:grid-cols-[0.85fr_1.15fr]">
       <div>
@@ -308,6 +335,17 @@ function EmptyWorkspace({ onOpenDemo }: { onOpenDemo: () => void }) {
             <Sparkles className="h-4 w-4 text-sky-400" /> Explore demo session
           </button>
         </div>
+        {process.env.NODE_ENV !== "production" && accountId ? (
+          <details className="mt-8 max-w-lg rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3 text-xs text-slate-500">
+            <summary className="cursor-pointer select-none text-slate-400">Storage diagnostics</summary>
+            <dl className="mt-3 space-y-2 font-mono text-[10px] leading-5">
+              <div className="flex gap-3"><dt className="text-slate-700">email</dt><dd className="break-all text-slate-500">{accountEmail ?? "unknown"}</dd></div>
+              <div className="flex gap-3"><dt className="text-slate-700">user_id</dt><dd className="break-all text-slate-500">{accountId}</dd></div>
+              <div className="flex gap-3"><dt className="text-slate-700">project</dt><dd className="break-all text-slate-500">{process.env.NEXT_PUBLIC_SUPABASE_URL ?? "not configured"}</dd></div>
+            </dl>
+            <p className="mt-3 text-[11px] leading-5 text-slate-600">Compare this user_id with the research_sessions rows in Supabase. They must match exactly.</p>
+          </details>
+        ) : null}
       </div>
       <ResearchConstellation />
     </div>

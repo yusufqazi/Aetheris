@@ -20,10 +20,12 @@ export async function runDrugInteractionAgent({
   question,
   chunks,
   onFallback,
+  shouldUseProvider,
 }: {
   question: string;
   chunks: SearchChunk[];
   onFallback?: FallbackObserver;
+  shouldUseProvider?: () => boolean;
 }) {
   const interactionChunks = chunks.filter((chunk) =>
     SIGNAL_WORDS.some((word) => chunk.text.toLowerCase().includes(word)),
@@ -44,6 +46,7 @@ export async function runDrugInteractionAgent({
     schemaName: "drug_interaction_output",
     qualityCheck: (output) => output.findings.length > 0 && hasConcreteContent(output),
     onFallback,
+    shouldUseProvider,
     fallback: () => ({
       agentName: "Drug Interaction Agent",
       summary: interactionFacts.length > 0

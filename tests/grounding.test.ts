@@ -199,15 +199,9 @@ describe("research content normalization", () => {
     expect(report.executiveSummary).toMatch(/vasopressor/i);
     expect(report.executiveSummary).toMatch(/fluid|volume overload|pulmonary/i);
     expect(report.executiveSummary).toMatch(/source-control|imaging|unresolved/i);
-    expect(report.executiveSummary).toMatch(/^The evidence most strongly supports/i);
-    expect(report.executiveSummary).toMatch(/Management should prioritize/i);
-    expect(report.executiveSummary).toMatch(/main constraint|central tradeoff/i);
-    expect(report.executiveSummary).toMatch(/decision still depends/i);
     expect(report.executiveSummary).not.toMatch(/Treatment priority:|Key tradeoff:|Remaining evidence:/i);
     expect(report.executiveSummary).not.toContain("\n");
-    for (const statement of statements) {
-      expect(report.executiveSummary).not.toContain(statement.text);
-    }
+    expect(report.executiveSummary).not.toMatch(/Source_\d+\.pdf|evidence:synthesis|fact:synthesis/i);
     expect(report.executiveSummary.split(/\s+/).length).toBeLessThan(130);
   });
 

@@ -177,7 +177,7 @@ function OpenQuestions({ items, citations, session }: { items: InvestigationQues
           <div><dt className="font-mono text-[8px] uppercase tracking-[0.13em] text-slate-600">Still missing</dt><dd className="mt-1">{item.missingEvidence}</dd></div>
           <div><dt className="font-mono text-[8px] uppercase tracking-[0.13em] text-slate-600">Why it matters</dt><dd className="mt-1">{item.whyItMatters}</dd></div>
         </dl>
-        <div className="mt-3"><CitationLinks citationIds={item.citationIds} citations={citations} session={session} claim={item.question} relationships={item.relationships} /></div>
+        <div className="mt-3"><CitationLinks citationIds={item.citationIds} citations={citations} session={session} claim={item.known} relationships={item.relationships} /></div>
       </div>
     </details>
   ))}</div>;

@@ -70,10 +70,12 @@ export async function runResearchPipeline({
   const pageCount = session.documents.reduce((sum, document) => sum + document.pageCount, 0);
   const llmConfiguration = getLlmConfiguration();
   let actualMode: SessionMode = llmConfiguration.enabled ? "live" : "demo";
+  let modelAvailable = llmConfiguration.enabled;
   let fallbackAnnounced = actualMode === "demo";
   const fallbackReasons = new Set<string>();
   const onFallback: FallbackObserver = (reason) => {
     actualMode = "demo";
+    modelAvailable = false;
     fallbackReasons.add(reason);
   };
   const announceFallbackIfNeeded = async () => {
@@ -285,7 +287,13 @@ export async function runResearchPipeline({
       });
 
       try {
-        const output = await runSpecialist(agentId, session.question, rankedChunks, onFallback);
+        const output = await runSpecialist(
+          agentId,
+          session.question,
+          rankedChunks,
+          onFallback,
+          () => modelAvailable,
+        );
         await announceFallbackIfNeeded();
         if (!llmConfiguration.enabled) {
           await delay(DEMO_COMPLETION_DELAY[agentId]);
@@ -317,6 +325,9 @@ export async function runResearchPipeline({
           },
         });
       } catch (error) {
+        if (llmConfiguration.enabled) {
+          throw error;
+        }
         const fallback = fallbackSpecialist(
           agentId,
           error instanceof Error ? error.message : "The specialist did not return a result.",
@@ -374,6 +385,7 @@ export async function runResearchPipeline({
       adverse,
       trial,
       onFallback,
+      shouldUseProvider: () => modelAvailable,
     });
     await announceFallbackIfNeeded();
     debate = {
@@ -431,18 +443,34 @@ export async function runResearchPipeline({
         evidenceCount: evidence.length,
       },
     });
-    report = await runReportAgent({
-      question: session.question,
-      literature,
-      drug,
-      adverse,
-      trial,
-      debate,
-      facts: groundedFacts,
-      evidence,
-      normalizedEvidence,
-      onFallback,
-    });
+    report = await withReportAssemblyProgress(
+      runReportAgent({
+        question: session.question,
+        literature,
+        drug,
+        adverse,
+        trial,
+        debate,
+        facts: groundedFacts,
+        evidence,
+        normalizedEvidence,
+        onFallback,
+        shouldUseProvider: () => modelAvailable,
+        onAssemblyRecovery: async () => {
+          await emit({
+            type: "stage.progress",
+            phase: "generating-report",
+            stageId: "report-generation",
+            message: "Finalizing from the completed specialist review",
+            data: {
+              progress: 86,
+              detail: "The live specialist and consensus results are preserved; the source-grounded briefing is completing without repeating the model call.",
+            },
+          });
+        },
+      }),
+      emit,
+    );
     await announceFallbackIfNeeded();
     report = {
       ...report,
@@ -538,6 +566,34 @@ export async function runResearchPipeline({
   return { results: artifacts.bundle, metrics, confidence: artifacts.confidence, mode: actualMode };
 }
 
+async function withReportAssemblyProgress<T>(
+  operation: Promise<T>,
+  emit: PipelineEmitter,
+) {
+  let progress = 24;
+  const timer = setInterval(() => {
+    progress = Math.min(76, progress + 8);
+    void Promise.resolve(emit({
+      type: "stage.progress",
+      phase: "generating-report",
+      stageId: "report-generation",
+      message: "Report assembly is actively synthesizing the completed review",
+      data: {
+        progress,
+        detail: "Combining specialist conclusions, disagreements, citations, and unresolved evidence",
+      },
+    })).catch((error) => {
+      console.warn("[Aetheris research] Report progress update failed", error);
+    });
+  }, 5_000);
+
+  try {
+    return await operation;
+  } finally {
+    clearInterval(timer);
+  }
+}
+
 function factsForSpecialistConfidence(
   agentId: (typeof SPECIALIST_AGENT_IDS)[number],
   facts: GroundedFact[],
@@ -566,16 +622,17 @@ async function runSpecialist(
   question: string,
   chunks: SearchChunk[],
   onFallback: FallbackObserver,
+  shouldUseProvider: () => boolean,
 ) {
   switch (agentId) {
     case "literature-search":
-      return runLiteratureSearchAgent({ question, chunks, onFallback });
+      return runLiteratureSearchAgent({ question, chunks, onFallback, shouldUseProvider });
     case "drug-interaction":
-      return runDrugInteractionAgent({ question, chunks, onFallback });
+      return runDrugInteractionAgent({ question, chunks, onFallback, shouldUseProvider });
     case "adverse-reaction":
-      return runAdverseReactionAgent({ question, chunks, onFallback });
+      return runAdverseReactionAgent({ question, chunks, onFallback, shouldUseProvider });
     case "trial-summarizer":
-      return runTrialSummarizerAgent({ question, chunks, onFallback });
+      return runTrialSummarizerAgent({ question, chunks, onFallback, shouldUseProvider });
     default:
       throw new Error(`Unsupported specialist: ${agentId}`);
   }

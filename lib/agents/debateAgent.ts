@@ -17,8 +17,9 @@ export async function runDebateAgent(payload: {
   adverse: AdverseReactionAgentOutput;
   trial: TrialSummarizerAgentOutput;
   onFallback?: FallbackObserver;
+  shouldUseProvider?: () => boolean;
 }) {
-  const { question, literature, drug, adverse, trial, onFallback } = payload;
+  const { question, literature, drug, adverse, trial, onFallback, shouldUseProvider } = payload;
   const modelPayload = {
     question,
     specialists: {
@@ -55,6 +56,7 @@ export async function runDebateAgent(payload: {
     schemaName: "debate_consensus_output",
     qualityCheck: (output) => output.finalConsensus.trim().length > 30 && hasConcreteContent(output),
     onFallback,
+    shouldUseProvider,
     fallback: () => ({
       agentName: "Debate / Consensus Agent",
       summary: "Compared agent outputs to surface aligned findings, open disagreements, and missing evidence.",

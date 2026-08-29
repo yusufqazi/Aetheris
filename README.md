@@ -121,9 +121,10 @@ Create `.env.local` from [`.env.example`](./.env.example).
 ```bash
 AI_PROVIDER=google
 GEMINI_API_KEY=
-GEMINI_MODEL=gemini-3.5-flash
+GEMINI_MODEL=gemini-3.1-flash-lite
+GEMINI_FALLBACK_MODELS=gemini-3.5-flash-lite
 GEMINI_EMBEDDING_MODEL=gemini-embedding-2
-GEMINI_MIN_REQUEST_INTERVAL_MS=13000
+GEMINI_MIN_REQUEST_INTERVAL_MS=3500
 GEMINI_REQUEST_TIMEOUT_MS=55000
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini

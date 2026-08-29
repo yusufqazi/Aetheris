@@ -16,10 +16,12 @@ export async function runLiteratureSearchAgent({
   question,
   chunks,
   onFallback,
+  shouldUseProvider,
 }: {
   question: string;
   chunks: SearchChunk[];
   onFallback?: FallbackObserver;
+  shouldUseProvider?: () => boolean;
 }) {
   const facts = groundedFactsFromChunks(chunks, question);
   return runStructuredGeneration<LiteratureSearchAgentOutput>({
@@ -32,6 +34,7 @@ export async function runLiteratureSearchAgent({
     schemaName: "literature_search_output",
     qualityCheck: (output) => output.topRelevantExcerpts.length > 0 && hasConcreteContent(output),
     onFallback,
+    shouldUseProvider,
     fallback: () => ({
       agentName: "Literature Search Agent",
       summary: facts.length > 0

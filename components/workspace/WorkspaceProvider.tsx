@@ -14,6 +14,7 @@ import {
 import { useAuth } from "@/components/auth/AuthProvider";
 import { makeDemoSession } from "@/lib/demo-data";
 import { createEventFactory } from "@/lib/research/events";
+import { toUserFacingResearchError } from "@/lib/research/user-facing-errors";
 import {
   applyResearchEvent,
   createAgentExecutions,
@@ -30,13 +31,14 @@ import type {
 interface WorkspaceState {
   sessions: ResearchSession[];
   hydrated: boolean;
+  sessionSyncError: string | null;
   activeSessionId: string | null;
   inspector: WorkspaceInspectorSelection;
   mobileInspectorOpen: boolean;
 }
 
 type WorkspaceAction =
-  | { type: "hydrate"; sessions: ResearchSession[] }
+  | { type: "hydrate"; sessions: ResearchSession[]; sessionSyncError: string | null }
   | { type: "session.upsert"; session: ResearchSession }
   | { type: "session.remove"; sessionId: string }
   | { type: "session.active"; sessionId: string | null }
@@ -57,6 +59,7 @@ interface WorkspaceContextValue extends WorkspaceState {
 const initialState: WorkspaceState = {
   sessions: [],
   hydrated: false,
+  sessionSyncError: null,
   activeSessionId: null,
   inspector: { tab: "confidence", sessionId: null, evidenceId: null, agentId: null },
   mobileInspectorOpen: false,
@@ -70,6 +73,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(workspaceReducer, initialState);
   const stateRef = useRef(state);
   const pollingSessionsRef = useRef(new Set<string>());
+  const startingSessionsRef = useRef(new Set<string>());
   const providerMountedRef = useRef(true);
 
   useEffect(() => {
@@ -93,24 +97,40 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         // Unowned legacy sessions remain readable for compatibility, but new guests
         // are never written to this cache.
         loadLocalSessions(user?.id),
-        user && accessToken ? fetch("/api/sessions", {
-          cache: "no-store",
-          headers: { Authorization: `Bearer ${accessToken}` },
-        })
-          .then((response) => (response.ok ? response.json() : []))
-          .catch(() => []) : Promise.resolve([]),
+        user && accessToken
+          ? fetch("/api/sessions", {
+              cache: "no-store",
+              headers: { Authorization: `Bearer ${accessToken}` },
+            }).then(async (response) => {
+              const payload = await response.json().catch(() => null) as unknown;
+              if (!response.ok) {
+                const message = isRecord(payload) && typeof payload.error === "string"
+                  ? payload.error
+                  : `Saved research sessions could not be loaded (${response.status}).`;
+                return { sessions: [], error: message };
+              }
+              return { sessions: Array.isArray(payload) ? payload : [], error: null };
+            }).catch(() => ({
+              sessions: [],
+              error: "Saved research sessions could not be reached. Check the Supabase connection.",
+            }))
+          : Promise.resolve({ sessions: [], error: null }),
       ]);
-      const remoteSessions = Array.isArray(remote)
-        ? remote
+      const remoteSessions = Array.isArray(remote.sessions)
+        ? remote.sessions
             .map(normalizeResearchSession)
             .filter((session): session is ResearchSession => Boolean(session))
         : [];
       const sessions = mergeSessions(local, remoteSessions);
 
       if (active) {
-        const next = workspaceReducer(stateRef.current, { type: "hydrate", sessions });
+        const next = workspaceReducer(stateRef.current, {
+          type: "hydrate",
+          sessions,
+          sessionSyncError: remote.error,
+        });
         stateRef.current = next;
-        dispatch({ type: "hydrate", sessions });
+        dispatch({ type: "hydrate", sessions, sessionSyncError: remote.error });
       }
     }
 
@@ -136,16 +156,24 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const deleteSession = useCallback(async (sessionId: string) => {
+    if (accessToken) {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }).catch(() => null);
+      if (!response?.ok) {
+        console.error("[Aetheris sessions] Remote deletion did not complete", {
+          sessionId,
+          status: response?.status ?? "network-error",
+        });
+        return;
+      }
+    }
+
     const next = workspaceReducer(stateRef.current, { type: "session.remove", sessionId });
     stateRef.current = next;
     dispatch({ type: "session.remove", sessionId });
     await deleteLocalSession(sessionId, user?.id);
-    if (accessToken) {
-      await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${accessToken}` },
-      }).catch(() => null);
-    }
   }, [accessToken, user]);
 
   const selectInspector = useCallback((selection: WorkspaceInspectorSelection) => {
@@ -169,7 +197,11 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     let transientFailures = 0;
 
     try {
-      while (providerMountedRef.current && isActiveResearchSession(activeSession)) {
+      // Once monitoring starts, the server job status is authoritative. A stale
+      // idle checkpoint can arrive while the POST that starts the job is still
+      // being accepted; stopping on that local snapshot leaves the UI frozen
+      // even though the server continues processing.
+      while (providerMountedRef.current) {
         await waitForPollingWindow(transientFailures);
         if (!providerMountedRef.current) return;
 
@@ -209,11 +241,30 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         }
 
         transientFailures = 0;
-        const remoteSession = normalizeResearchSession(payload.session);
+        const normalizedRemoteSession = normalizeResearchSession(payload.session);
+        const remoteSession = normalizedRemoteSession &&
+          (payload.status === "queued" || payload.status === "running") &&
+          normalizedRemoteSession.status === "idle"
+          ? {
+              ...normalizedRemoteSession,
+              status: "processing" as const,
+              updatedAt: activeSession.updatedAt,
+            }
+          : normalizedRemoteSession;
         if (remoteSession) {
-          activeSession = remoteSession;
+          activeSession = preferredSession(activeSession, remoteSession);
           sequence = Math.max(sequence, ...remoteSession.events.map((event) => event.sequence));
-          commitSession(remoteSession);
+          commitSession(activeSession);
+        } else if (
+          (payload.status === "queued" || payload.status === "running") &&
+          activeSession.status === "idle"
+        ) {
+          activeSession = {
+            ...activeSession,
+            status: "processing",
+            updatedAt: new Date().toISOString(),
+          };
+          commitSession(activeSession);
         }
 
         for (const event of payload.events ?? []) {
@@ -235,6 +286,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 
   const startAnalysis = useCallback(
     async (session: ResearchSession, options?: { retry?: boolean }) => {
+      if (startingSessionsRef.current.has(session.id)) return;
+      startingSessionsRef.current.add(session.id);
       let activeSession = options?.retry ? prepareForRetry(session) : session;
       if (activeSession.status === "idle") {
         activeSession = {
@@ -298,21 +351,20 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
           current.id,
           Math.max(0, ...current.events.map((event) => event.sequence)),
         );
+        const userFacingError = toUserFacingResearchError(error, {
+          code: "RESEARCH_START_FAILED",
+          defaultTitle: "Research analysis could not start",
+          defaultMessage: "Aetheris could not start the server-side research job. Your prepared documents are preserved.",
+        });
         const failure = createEvent({
           type: "session.failed",
           phase: "error",
           message: "The research job could not be started",
-          data: {
-            error: {
-              code: "RESEARCH_START_FAILED",
-              title: "Research analysis could not start",
-              message: "Aetheris could not start the server-side research job. Your prepared documents are preserved.",
-              retryable: true,
-              details: error instanceof Error ? error.message : "Unknown startup error",
-            },
-          },
+          data: { error: userFacingError },
         });
         commitSession(applyResearchEvent(current, failure));
+      } finally {
+        startingSessionsRef.current.delete(session.id);
       }
     },
     [accessToken, commitSession, pollResearchJob, router, selectInspector, setActiveSessionId],
@@ -432,7 +484,12 @@ export function useWorkspace() {
 function workspaceReducer(state: WorkspaceState, action: WorkspaceAction): WorkspaceState {
   switch (action.type) {
     case "hydrate":
-      return { ...state, sessions: action.sessions, hydrated: true };
+      return {
+        ...state,
+        sessions: mergeSessions(state.sessions, action.sessions),
+        hydrated: true,
+        sessionSyncError: action.sessionSyncError,
+      };
     case "session.upsert":
       return {
         ...state,
@@ -474,19 +531,37 @@ function sameInspectorSelection(
   );
 }
 
-function mergeSessions(local: ResearchSession[], remote: ResearchSession[]) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+export function mergeSessions(local: ResearchSession[], remote: ResearchSession[]) {
   const merged = new Map<string, ResearchSession>();
 
   for (const session of [...local, ...remote]) {
     const existing = merged.get(session.id);
-    if (!existing || session.updatedAt > existing.updatedAt) {
-      merged.set(session.id, session);
-    }
+    merged.set(session.id, existing ? preferredSession(existing, session) : session);
   }
 
   return Array.from(merged.values()).sort((left, right) =>
     right.updatedAt.localeCompare(left.updatedAt),
   );
+}
+
+export function preferredSession(
+  existing: ResearchSession,
+  candidate: ResearchSession,
+) {
+  if (existing.status !== "idle" && candidate.status === "idle") return existing;
+  if (existing.status === "idle" && candidate.status !== "idle") return candidate;
+
+  const existingSequence = Math.max(0, ...existing.events.map((event) => event.sequence));
+  const candidateSequence = Math.max(0, ...candidate.events.map((event) => event.sequence));
+  if (existingSequence !== candidateSequence) {
+    return candidateSequence > existingSequence ? candidate : existing;
+  }
+
+  return candidate.updatedAt > existing.updatedAt ? candidate : existing;
 }
 
 function prepareForRetry(session: ResearchSession): ResearchSession {
