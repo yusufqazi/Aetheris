@@ -272,7 +272,6 @@ async function generateWithOpenAi<T>({
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const response = await client.chat.completions.parse({
     model,
-    temperature: 0.1,
     response_format: zodResponseFormat(schema, schemaName),
     messages: [
       { role: "system", content: system },
