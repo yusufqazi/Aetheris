@@ -1,6 +1,4 @@
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
-
+import "pdfjs-dist/legacy/build/pdf.worker.mjs";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { nanoid } from "nanoid";
 
@@ -8,37 +6,7 @@ import { createDocumentPages, textItemsToStructuredText } from "@/lib/pdf.shared
 import type { UploadedDocument } from "@/lib/types";
 
 const MIN_EXTRACTABLE_TEXT = 24;
-let workerInitialized = false;
-let workerConfigurationError: unknown = null;
-let workerLoadingError: unknown = null;
 type PdfDocument = Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>;
-
-function initializePdfWorker() {
-  if (workerInitialized) {
-    return;
-  }
-  workerInitialized = true;
-
-  try {
-    const nodeRequire = createRequire(import.meta.url);
-    const workerPath = nodeRequire.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs");
-    const workerSrc = pathToFileURL(workerPath).href;
-    pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
-    // Node intentionally uses PDF.js's in-process worker fallback. Loading the
-    // resolved ESM module through createRequire keeps Next from rewriting it.
-    const workerModuleSpecifier = ["pdfjs-dist", "legacy", "build", "pdf.worker.mjs"].join("/");
-    const workerModule = nodeRequire.call(undefined, workerModuleSpecifier);
-    (globalThis as typeof globalThis & { pdfjsWorker?: unknown }).pdfjsWorker = workerModule;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "MODULE_NOT_FOUND") {
-      workerConfigurationError = error;
-      console.error("[Aetheris PDF] Failed to resolve the PDF.js worker", error);
-    } else {
-      workerLoadingError = error;
-      console.error("[Aetheris PDF] Failed to load the resolved PDF.js worker", error);
-    }
-  }
-}
 
 export interface PdfExtractionFailure {
   code:
@@ -68,24 +36,6 @@ export async function extractPdfDocument(
   file: File,
   sessionId?: string,
 ): Promise<UploadedDocument> {
-  initializePdfWorker();
-
-  if (workerConfigurationError) {
-    throw new PdfExtractionError({
-      code: "PDF_PARSER_INITIALIZATION",
-      message: "Aetheris PDF extraction is not initialized correctly on the server. The document was not blamed for this failure.",
-      details: describeOriginalError(workerConfigurationError),
-    });
-  }
-
-  if (workerLoadingError) {
-    throw new PdfExtractionError({
-      code: "PDF_WORKER_LOAD_FAILED",
-      message: "Aetheris could not start its server-side PDF worker. This is a parser infrastructure problem, not a problem with the uploaded document.",
-      details: describeOriginalError(workerLoadingError),
-    });
-  }
-
   const buffer = Buffer.from(await file.arrayBuffer());
   let document: PdfDocument | null = null;
 
@@ -209,8 +159,4 @@ export function describePdfExtractionError(error: unknown, fileName = "This PDF"
     message: `${fileName} could not be read. Try opening it locally and exporting a fresh, searchable PDF copy.`,
     details,
   };
-}
-
-function describeOriginalError(error: unknown) {
-  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
