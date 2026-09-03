@@ -24,6 +24,8 @@ const original = {
   geminiRequestTimeout: process.env.GEMINI_REQUEST_TIMEOUT_MS,
   geminiMaxConcurrentRequests: process.env.GEMINI_MAX_CONCURRENT_REQUESTS,
   openAiKey: process.env.OPENAI_API_KEY,
+  openAiModel: process.env.OPENAI_MODEL,
+  openAiEmbeddingModel: process.env.OPENAI_EMBEDDING_MODEL,
 };
 
 afterEach(() => {
@@ -34,6 +36,8 @@ afterEach(() => {
   restore("GEMINI_REQUEST_TIMEOUT_MS", original.geminiRequestTimeout);
   restore("GEMINI_MAX_CONCURRENT_REQUESTS", original.geminiMaxConcurrentRequests);
   restore("OPENAI_API_KEY", original.openAiKey);
+  restore("OPENAI_MODEL", original.openAiModel);
+  restore("OPENAI_EMBEDDING_MODEL", original.openAiEmbeddingModel);
 });
 
 describe("AI provider configuration", () => {
@@ -48,6 +52,37 @@ describe("AI provider configuration", () => {
     expect(serialized).toContain('"claims"');
     expect(serialized).toContain('"contradictions"');
     expect(serialized).toContain('"unansweredQuestions"');
+  });
+
+  it("discards an incomplete contradiction without rejecting the rest of a report", () => {
+    const parsed = researchDirectorOutputSchema.safeParse({
+      answerStatus: "direct",
+      directAnswer: "The supported evidence establishes the main conclusion.",
+      claims: [],
+      trajectory: [],
+      contradictions: [
+        {
+          issue: "Incomplete model contradiction",
+          sourcePositions: ["Only one position was returned."],
+          reconciliation: "A comparison is not possible.",
+          impact: "This item must not invalidate the complete report.",
+          evidenceIds: ["evidence:one"],
+        },
+        {
+          issue: "Complete model contradiction",
+          sourcePositions: ["Begin therapy now.", "Delay therapy pending review."],
+          reconciliation: "The timing recommendations remain incompatible.",
+          impact: "The decision requires review of both positions.",
+          evidenceIds: ["evidence:one", "evidence:two"],
+        },
+      ],
+      unansweredQuestions: [],
+    });
+
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.contradictions).toHaveLength(1);
+    expect(parsed.data.contradictions[0].issue).toBe("Complete model contradiction");
   });
 
   it("prefers Gemini when a Google AI Studio key is configured", () => {
@@ -69,8 +104,15 @@ describe("AI provider configuration", () => {
     process.env.AI_PROVIDER = "openai";
     process.env.GEMINI_API_KEY = "test-google-key";
     process.env.OPENAI_API_KEY = "test-openai-key";
+    delete process.env.OPENAI_MODEL;
+    delete process.env.OPENAI_EMBEDDING_MODEL;
 
-    expect(getLlmConfiguration()).toMatchObject({ provider: "openai", enabled: true });
+    expect(getLlmConfiguration()).toMatchObject({
+      provider: "openai",
+      enabled: true,
+      model: "gpt-5.6-luna",
+      embeddingModel: "text-embedding-3-small",
+    });
   });
 
   it("reports local extraction when no provider key exists", () => {

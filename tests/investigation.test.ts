@@ -216,6 +216,104 @@ describe("investigation summary model", () => {
     expect(conflict?.citationIds).toHaveLength(2);
   });
 
+  it("preserves a numeric outcome disagreement without opposite polarity wording", () => {
+    const session = makeDemoSession();
+    const firstResult = "The AX-217 response rate was 34% at week 12.";
+    const secondResult = "The AX-217 response rate was 12% at week 12.";
+    session.question = "What response rate was reported for AX-217 at week 12?";
+    session.documents = [firstResult, secondResult].map((text, index) => ({
+      ...session.documents[index],
+      id: `document:numeric-outcome:${index}`,
+      name: `Numeric_Outcome_${index + 1}.pdf`,
+      text,
+      pageCount: 1,
+      pages: [{ number: 1, text, startOffset: 0, endOffset: text.length }],
+    }));
+    const facts = [
+      makeFact(session, 0, "finding", firstResult, "evidence:numeric:first"),
+      makeFact(session, 1, "finding", secondResult, "evidence:numeric:second"),
+    ].map((fact) => ({ ...fact, category: "statistical" as const }));
+    session.evidence = facts.map(makeEvidence);
+    session.results = {
+      ...session.results!,
+      groundedFacts: facts,
+      citations: undefined,
+      reportGeneration: {
+        ...session.results!.reportGeneration,
+        citations: undefined,
+        recommendedFollowUpQuestions: [],
+        researchIntelligence: undefined,
+      },
+    };
+
+    const conflict = buildInvestigationData(session).conflicts.find(
+      (item) => item.type === "Outcome disagreement",
+    );
+
+    expect(conflict).toBeDefined();
+    expect(conflict?.citationIds).toHaveLength(2);
+    expect(conflict?.positions.map((position) => position.statement)).toEqual([
+      firstResult,
+      secondResult,
+    ]);
+  });
+
+  it("keeps opposing recommendations from distinct passages in one document", () => {
+    const session = makeDemoSession();
+    const sourceFor = "The attending recommends administering aspirin immediately.";
+    const sourceAgainst = "The consultant recommends withholding aspirin because bleeding remains unresolved.";
+    const documentText = `${sourceFor}\n\n${sourceAgainst}`;
+    session.question = "Should aspirin be given now?";
+    session.documents = [{
+      ...session.documents[0],
+      id: "document:single-record",
+      name: "Single_Clinical_Record.pdf",
+      text: documentText,
+      pageCount: 1,
+      pages: [{ number: 1, text: documentText, startOffset: 0, endOffset: documentText.length }],
+    }];
+    const facts = [
+      makeFact(session, 0, "recommendation", sourceFor, "evidence:aspirin:for"),
+      makeFact(session, 0, "recommendation", sourceAgainst, "evidence:aspirin:against"),
+    ];
+    session.evidence = facts.map(makeEvidence);
+    session.results = {
+      ...session.results!,
+      groundedFacts: facts,
+      citations: undefined,
+      reportGeneration: {
+        ...session.results!.reportGeneration,
+        citations: undefined,
+        recommendedFollowUpQuestions: [],
+        researchIntelligence: {
+          answerStatus: "partial",
+          directAnswer: "The record contains incompatible recommendations about aspirin timing.",
+          strongestSupportedConclusion: "The aspirin timing decision remains disputed.",
+          strongestCounterpoint: "Both positions are documented in the same clinical record.",
+          evidenceTrajectory: [],
+          interactionPathways: [],
+          contradictions: [{
+            issue: "The clinicians disagree about immediate aspirin use.",
+            sourcePositions: ["Begin aspirin now.", "Stop aspirin temporarily."],
+            reconciliation: "The recommendations cannot both govern the same immediate decision.",
+            impact: "The treatment timing must remain separately attributed.",
+            evidenceIds: facts.map((fact) => fact.evidenceId),
+          }],
+          decisionChangingUnknowns: [],
+          evidenceMappings: [],
+          structuredClaims: [],
+        },
+      },
+    };
+
+    const conflicts = buildInvestigationData(session).conflicts;
+
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].documentNames).toEqual(["Single_Clinical_Record.pdf"]);
+    expect(new Set(conflicts[0].citationIds).size).toBe(2);
+    expect(conflicts[0].positions.every((position) => position.citationIds.length === 1)).toBe(true);
+  });
+
   it("detects proceed-versus-delay treatment recommendations as a source conflict", () => {
     const session = makeDemoSession();
     const proceedText = "The oncology review recommends starting NX-410 treatment now.";

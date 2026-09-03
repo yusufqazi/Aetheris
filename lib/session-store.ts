@@ -108,7 +108,16 @@ export async function deleteLocalSession(id: string, ownerId?: string | null) {
 }
 
 async function migrateLegacySessions() {
-  if (typeof window === "undefined" || window.localStorage.getItem(MIGRATION_KEY) === "complete") {
+  let storage: Storage;
+  try {
+    if (typeof window === "undefined" || !window.localStorage) {
+      return;
+    }
+    storage = window.localStorage;
+    if (storage.getItem(MIGRATION_KEY) === "complete") {
+      return;
+    }
+  } catch {
     return;
   }
 
@@ -117,7 +126,7 @@ async function migrateLegacySessions() {
     return;
   }
 
-  const raw = window.localStorage.getItem(LEGACY_STORAGE_KEY);
+  const raw = storage.getItem(LEGACY_STORAGE_KEY);
   if (raw) {
     try {
       const values = JSON.parse(raw) as unknown[];
@@ -129,11 +138,11 @@ async function migrateLegacySessions() {
         ...sessions.map((session) => transaction.store.put(session)),
         transaction.done,
       ]);
-      window.localStorage.removeItem(LEGACY_STORAGE_KEY);
+      storage.removeItem(LEGACY_STORAGE_KEY);
     } catch {
       // Leave malformed legacy data untouched; a future migration may still recover it.
     }
   }
 
-  window.localStorage.setItem(MIGRATION_KEY, "complete");
+  storage.setItem(MIGRATION_KEY, "complete");
 }

@@ -341,7 +341,7 @@ function openAiConfiguration(): LlmConfiguration {
     enabled: true,
     provider: "openai",
     providerLabel: "OpenAI",
-    model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
+    model: process.env.OPENAI_MODEL ?? "gpt-5.6-luna",
     embeddingModel: process.env.OPENAI_EMBEDDING_MODEL ?? "text-embedding-3-small",
   };
 }

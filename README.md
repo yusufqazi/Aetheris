@@ -119,22 +119,23 @@ supabase/
 Create `.env.local` from [`.env.example`](./.env.example).
 
 ```bash
-AI_PROVIDER=google
+AI_PROVIDER=openai
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5.6-luna
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-3.1-flash-lite
 GEMINI_FALLBACK_MODELS=gemini-3.5-flash-lite
 GEMINI_EMBEDDING_MODEL=gemini-embedding-2
 GEMINI_MIN_REQUEST_INTERVAL_MS=3500
 GEMINI_REQUEST_TIMEOUT_MS=55000
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-4.1-mini
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
 ```
 
 Notes:
-- Google AI Studio is the preferred setup. Put the key in `.env.local`, never in a `NEXT_PUBLIC_*` variable.
+- OpenAI GPT-5.6 Luna is the preferred generation setup. Put `OPENAI_API_KEY` in `.env.local`, never in a `NEXT_PUBLIC_*` variable.
 - Gemini generation requests are serialized and conservatively paced by default so six-role runs remain usable on restricted development quotas.
 - If no AI key is configured, the app falls back to deterministic local extraction and labels the result accordingly.
 - Model-assisted runs use six focused roles, semantic evidence retrieval, source-ID validation, and a research-intelligence synthesis rather than a generic document summary.

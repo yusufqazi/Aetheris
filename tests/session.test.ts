@@ -7,7 +7,12 @@ import {
   createResearchSession,
   normalizeResearchSession,
 } from "@/lib/research/session";
-import { deleteLocalSession, findLocalSession, saveLocalSession } from "@/lib/session-store";
+import {
+  deleteLocalSession,
+  findLocalSession,
+  loadLocalSessions,
+  saveLocalSession,
+} from "@/lib/session-store";
 import { AGENT_IDS } from "@/lib/types";
 
 describe("research session state", () => {
@@ -130,5 +135,19 @@ describe("research session state", () => {
 
     expect(await findLocalSession(removed.id)).toBeNull();
     expect(await findLocalSession(preserved.id)).toMatchObject({ id: preserved.id });
+  });
+
+  it("continues loading sessions when localStorage is unavailable", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: undefined,
+    });
+
+    try {
+      await expect(loadLocalSessions()).resolves.toEqual(expect.any(Array));
+    } finally {
+      if (descriptor) Object.defineProperty(window, "localStorage", descriptor);
+    }
   });
 });

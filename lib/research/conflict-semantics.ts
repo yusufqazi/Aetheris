@@ -178,7 +178,11 @@ export function recommendationsMateriallyConflict(left: string, right: string) {
   ) return false;
   const leftAction = normalizeRecommendation(left).action;
   const rightAction = normalizeRecommendation(right).action;
-  if (!leftAction || !rightAction || leftAction === rightAction) return false;
+  if (!leftAction || !rightAction) return false;
+  if (leftRole === rightRole) {
+    return sameStanceBoundaryConflict(left, right, leftAction, rightAction);
+  }
+  if (leftAction === rightAction) return false;
 
   const conflict = (
     (leftAction === "proceed" && ["delay", "stop", "restrict"].includes(rightAction)) ||
@@ -251,6 +255,24 @@ export function sameOutcomeQuestion(left: string, right: string) {
   return shared.some((token) => OUTCOME_ANCHORS.has(token));
 }
 
+export function numericOutcomeDiffers(left: string, right: string) {
+  const leftValues = numericValues(left);
+  const rightValues = numericValues(right);
+  if (
+    leftValues.length === 0 ||
+    rightValues.length === 0 ||
+    (leftValues.length === rightValues.length && leftValues.every((value) => rightValues.includes(value)))
+  ) return false;
+
+  const leftTimepoints = timepointMarkers(left);
+  const rightTimepoints = timepointMarkers(right);
+  const isLongitudinal = [left, right].some((value) =>
+    /\b(?:after|baseline|before|earlier|follow-up|initially|later|on admission|over time|then|trend)\b/i.test(value),
+  );
+
+  return !isLongitudinal || intersection(leftTimepoints, rightTimepoints).length > 0;
+}
+
 export function sameClinicalQuestion(left: string, right: string) {
   return sameManagementTarget(left, right) || sameOutcomeQuestion(left, right);
 }
@@ -284,8 +306,20 @@ function intersection(left: string[], right: string[]) {
 
 function isDistinctiveTarget(token: string) {
   return /\d|-/.test(token) ||
-    token.length >= 8 ||
-    /^(?:biopsy|dialysis|fluids|surgery|sedation)$/.test(token);
+    token.length >= 5;
+}
+
+function numericValues(text: string) {
+  return text.toLowerCase().match(/\b\d+(?:\.\d+)?\s*(?:%|mg|mcg|g|ml|l|mmhg|mmol\/l|mg\/dl|ng\/ml|weeks?|months?|days?|hours?)?\b/g)
+    ?.map((value) => value.replace(/\s+/g, "")) ?? [];
+}
+
+function timepointMarkers(text: string) {
+  return Array.from(new Set(
+    text.toLowerCase().match(
+      /\b(?:at|on|by|during)\s+(?:week|month|day|hour)\s*\d+(?:\.\d+)?|\b(?:week|month|day|hour)\s*\d+(?:\.\d+)?\b/g,
+    )?.map((value) => value.replace(/^(?:at|on|by|during)\s+/, "")) ?? [],
+  ));
 }
 
 function shareCompatibleTimingBoundary(left: string, right: string) {
@@ -295,6 +329,26 @@ function shareCompatibleTimingBoundary(left: string, right: string) {
   const deferBoundary = conditionTokens(deferText, /\b(?:until|pending|while awaiting)\b\s+(.{3,100})/i);
   if (proceedBoundary.length === 0 || deferBoundary.length === 0) return false;
   return intersection(proceedBoundary, deferBoundary).length > 0;
+}
+
+function sameStanceBoundaryConflict(
+  left: string,
+  right: string,
+  leftAction: RecommendationAction,
+  rightAction: RecommendationAction,
+) {
+  const leftBoundary = decisionBoundaryTokens(left);
+  const rightBoundary = decisionBoundaryTokens(right);
+  if (leftBoundary.length === 0 || rightBoundary.length === 0) return false;
+  if (intersection(leftBoundary, rightBoundary).length > 0) return false;
+  return leftAction !== rightAction || leftAction === "delay";
+}
+
+function decisionBoundaryTokens(text: string) {
+  const match = normalize(text).match(
+    /\b(?:after|before|if|once|pending|solely because|until|unless|while awaiting)\b\s+(.{3,100})/i,
+  );
+  return match ? subjectTokens(match[1]) : [];
 }
 
 function conditionTokens(text: string, pattern: RegExp) {

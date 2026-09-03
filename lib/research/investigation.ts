@@ -40,9 +40,11 @@ import {
 import {
   classifyStatementRole,
   isNeutralPositionStatement,
+  numericOutcomeDiffers,
   recommendationConflictKind,
   recommendationsMateriallyConflict,
   sameClinicalQuestion,
+  sameManagementTarget,
   sameOutcomeQuestion,
 } from "@/lib/research/conflict-semantics";
 import {
@@ -734,9 +736,10 @@ function compareConflictPair(left: GroundedFact, right: GroundedFact) {
     sameOutcomeQuestion(leftText, rightText) &&
     isEfficacyFact(left) &&
     isEfficacyFact(right) &&
-    leftPolarity &&
-    rightPolarity &&
-    leftPolarity !== rightPolarity
+    (
+      (leftPolarity && rightPolarity && leftPolarity !== rightPolarity) ||
+      numericOutcomeDiffers(leftText, rightText)
+    )
   ) {
     return {
       type: sourceRolesDiffer ? "Source disagreement" as const : "Outcome disagreement" as const,
@@ -1010,23 +1013,29 @@ function isReviewableConflict(conflict: InvestigationConflict) {
   if (/^(?:documentation discrepancy|potential contradiction|conflict|inconsistency|source disagreement|outcome disagreement)[.!]?$/i.test(conflict.statement.trim())) {
     return false;
   }
-  const positionDocuments = new Set(conflict.positions.map((position) => position.documentName));
+  const positionSources = new Set(conflict.positions.map((position) => position.documentName));
+  const distinctCitations = new Set(conflict.citationIds);
   const hasGenuinePair = conflict.positions.some((left, index) =>
     conflict.positions.slice(index + 1).some((right) =>
       recommendationsMateriallyConflict(left.statement, right.statement) ||
       (
         sameOutcomeQuestion(left.statement, right.statement) &&
-        evidencePolarity(left.statement) !== null &&
-        evidencePolarity(right.statement) !== null &&
-        evidencePolarity(left.statement) !== evidencePolarity(right.statement)
+        (
+          (
+            evidencePolarity(left.statement) !== null &&
+            evidencePolarity(right.statement) !== null &&
+            evidencePolarity(left.statement) !== evidencePolarity(right.statement)
+          ) ||
+          numericOutcomeDiffers(left.statement, right.statement)
+        )
       )
     )
   );
   const explicitDocumentationDiscrepancy = conflict.type === "Documentation discrepancy" &&
     /\b(?:whereas|differs?|reported differently|documentation discrepancy)\b/i.test(conflict.statement);
   return conflict.positions.length >= 2 &&
-    positionDocuments.size >= 2 &&
-    conflict.citationIds.length >= 2 &&
+    (positionSources.size >= 2 || distinctCitations.size >= 2) &&
+    distinctCitations.size >= 2 &&
     (hasGenuinePair || explicitDocumentationDiscrepancy);
 }
 
@@ -1044,7 +1053,12 @@ function citationSupportsPosition(citation: Citation, statement: string) {
   const targetTopics = semanticTopics(statement);
   const sourceTopics = semanticTopics(source);
   return areSemanticallyEquivalent(source, statement) ||
-    targetTopics.filter((topic) => sourceTopics.includes(topic)).length >= 2;
+    targetTopics.filter((topic) => sourceTopics.includes(topic)).length >= 2 ||
+    (
+      statementRole === sourceRole &&
+      ["recommendation_for", "recommendation_against"].includes(statementRole) &&
+      sameManagementTarget(source, statement)
+    );
 }
 
 function attachRelationships<T extends InvestigationConflict | InvestigationChange>(

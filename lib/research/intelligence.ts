@@ -11,6 +11,7 @@ import {
 } from "@/lib/research/open-questions";
 import {
   classifyStatementRole,
+  numericOutcomeDiffers,
   recommendationsMateriallyConflict,
   sameClinicalQuestion,
   sameOutcomeQuestion,
@@ -220,14 +221,9 @@ function isGenuineContradiction(
 function outcomesConflict(left: string, right: string) {
   const positive = /\b(?:improv|benefit|positive|effective|response|resolved|decreased)\w*\b/i;
   const negative = /\b(?:did not|no benefit|negative|ineffective|failed|worsen|increased risk|persisted)\w*\b/i;
-  const leftValues: string[] = left.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
-  const rightValues: string[] = right.match(/\b\d+(?:\.\d+)?%?\b/g) ?? [];
-  const differentValues = leftValues.length > 0 &&
-    rightValues.length > 0 &&
-    (leftValues.length !== rightValues.length || leftValues.some((value) => !rightValues.includes(value)));
   return (positive.test(left) && negative.test(right)) ||
     (positive.test(right) && negative.test(left)) ||
-    differentValues;
+    numericOutcomeDiffers(left, right);
 }
 
 function uncertaintyDiffers(left: string, right: string, issue: string) {

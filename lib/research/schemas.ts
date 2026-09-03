@@ -198,13 +198,21 @@ export const researchDirectorOutputSchema = z.object({
     interpretation: z.string(),
     evidenceIds: z.array(z.string()).min(1).max(4),
   })).max(6),
-  contradictions: z.array(z.object({
+  contradictions: z.preprocess((value) => {
+    if (!Array.isArray(value)) return [];
+    return value.filter((item) => {
+      if (!item || typeof item !== "object") return false;
+      const candidate = item as Record<string, unknown>;
+      return Array.isArray(candidate.sourcePositions) && candidate.sourcePositions.length >= 2 &&
+        Array.isArray(candidate.evidenceIds) && candidate.evidenceIds.length >= 2;
+    });
+  }, z.array(z.object({
     issue: z.string(),
     sourcePositions: z.array(z.string()).min(2).max(4),
     reconciliation: z.string(),
     impact: z.string(),
     evidenceIds: z.array(z.string()).min(2).max(6),
-  })).max(5),
+  })).max(5)),
   unansweredQuestions: z.array(z.object({
     question: z.string(),
     known: z.string(),
