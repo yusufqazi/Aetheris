@@ -125,9 +125,9 @@ export function buildFallbackResearchIntelligence({
       : "partial";
 
   const unresolvedQuestions = deduplicateDecisionQuestions([
-    ...followUpQuestions,
     ...(consensus?.missingEvidence ?? []).flatMap(openQuestionsFromMissingEvidence),
-  ]).slice(0, 4);
+    ...followUpQuestions,
+  ]).slice(0, 6);
 
   return {
     answerStatus,
@@ -150,7 +150,11 @@ export function buildFallbackResearchIntelligence({
         uncertainty: claim.uncertainty,
         evidenceIds: claim.evidenceIds,
       })),
-    contradictions: buildFallbackContradictions(facts, evidence),
+    contradictions: buildFallbackContradictions(
+      facts,
+      evidence,
+      consensus?.disagreements ?? [],
+    ),
     decisionChangingUnknowns: unresolvedQuestions.map((unknown, index) => {
       const evidenceIds = evidenceIdsForQuestion(unknown, facts);
       const relatedFacts = facts.filter((fact) => evidenceIds.includes(fact.evidenceId));
@@ -171,14 +175,34 @@ export function buildFallbackResearchIntelligence({
 export function buildFallbackContradictions(
   facts: GroundedFact[],
   evidence: EvidenceItem[],
+  acceptedDisagreements: string[] = [],
 ): ResearchContradiction[] {
   const validEvidenceIds = new Set(evidence.flatMap((item) => [item.id, item.chunkId]));
   const candidates = facts.filter((fact) =>
     validEvidenceIds.has(fact.evidenceId) &&
     !isNeutralPositionStatement(fact.text) &&
-    !["unresolved_question", "evidence_excerpt", "longitudinal_change"].includes(fact.contentType),
+    !["evidence_excerpt", "longitudinal_change"].includes(fact.contentType) &&
+    (
+      fact.contentType !== "unresolved_question" ||
+      ["recommendation_for", "recommendation_against"].includes(classifyStatementRole(fact.text))
+    ),
   );
   const contradictions: ResearchContradiction[] = [];
+
+  for (const disagreement of acceptedDisagreements) {
+    const positions = consensusPositionFacts(disagreement, candidates);
+    if (
+      positions.length < 2 ||
+      !recommendationsMateriallyConflict(positions[0].text, positions[1].text)
+    ) continue;
+    contradictions.push({
+      issue: disagreement,
+      sourcePositions: positions.map((fact) => fact.text),
+      reconciliation: "The source-specific thresholds must remain separately attributed until the decision criteria are resolved.",
+      impact: "The disagreement changes the decision threshold and should remain visible in the final briefing.",
+      evidenceIds: positions.map((fact) => fact.evidenceId),
+    });
+  }
 
   for (let leftIndex = 0; leftIndex < candidates.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < candidates.length; rightIndex += 1) {
@@ -223,6 +247,45 @@ export function buildFallbackContradictions(
   return contradictions;
 }
 
+function consensusPositionFacts(disagreement: string, facts: GroundedFact[]) {
+  const disagreementText = disagreement.toLowerCase();
+  const disagreementTopics = new Set(semanticTopics(disagreement));
+  const ranked = facts
+    .map((fact) => {
+      const sourceTerms = fact.documentName
+        .replace(/\.pdf$/i, "")
+        .replace(/^\d+[_\s-]*/, "")
+        .replace(/[_-]+/g, " ")
+        .replace(/\b(?:consult|consultation|note|report|summary|addendum)\b/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .split(" ")
+        .filter((term) => term.length >= 4);
+      const sourceMentioned = sourceTerms.some((term) => disagreementText.includes(term.toLowerCase()));
+      const sharedTopics = semanticTopics(fact.text).filter((topic) => disagreementTopics.has(topic)).length;
+      const recommendation = ["recommendation_for", "recommendation_against"].includes(
+        classifyStatementRole(fact.text),
+      );
+      return {
+        fact,
+        sourceMentioned,
+        score: (sourceMentioned ? 8 : 0) + sharedTopics + (recommendation ? 2 : 0),
+      };
+    })
+    .filter((item) => item.score >= 4)
+    .sort((left, right) => right.score - left.score);
+  const sourceMatched = ranked.filter((item) => item.sourceMentioned);
+  const sourceMatchedDocuments = new Set(sourceMatched.map((item) => item.fact.documentId));
+  const pool = sourceMatchedDocuments.size >= 2 ? sourceMatched : ranked;
+  const selected: GroundedFact[] = [];
+  for (const item of pool) {
+    if (selected.some((fact) => fact.documentId === item.fact.documentId)) continue;
+    selected.push(item.fact);
+    if (selected.length === 2) break;
+  }
+  return selected;
+}
+
 function localEvidencePolarity(text: string) {
   if (/\b(?:did not|no meaningful|no significant|failed|negative|inferior|worsen\w*|deteriorat\w*|increased risk|higher risk|serious adverse)\b/i.test(text)) {
     return "negative" as const;
@@ -250,7 +313,10 @@ function deduplicateDecisionQuestions(questions: string[]) {
     if (accepted.some((candidate) => {
       const candidateTopics = normalizedQuestionTopics(candidate);
       const shared = topics.filter((topic) => candidateTopics.includes(topic));
-      return shared.length >= 2 && shared.length >= Math.min(topics.length, candidateTopics.length) * 0.4;
+      const requiredShared = Math.min(2, topics.length, candidateTopics.length);
+      return requiredShared > 0 &&
+        shared.length >= requiredShared &&
+        shared.length >= Math.min(topics.length, candidateTopics.length) * 0.4;
     })) continue;
     accepted.push(question);
   }
@@ -258,9 +324,13 @@ function deduplicateDecisionQuestions(questions: string[]) {
 }
 
 function normalizedQuestionTopics(question: string) {
-  return semanticTopics(question).map((topic) =>
-    topic.length > 5 && topic.endsWith("s") ? topic.slice(0, -1) : topic
-  );
+  const generic = new Set([
+    "about", "assessment", "establish", "evaluation", "evidence", "missing", "pending",
+    "result", "show",
+  ]);
+  return semanticTopics(question)
+    .map((topic) => topic.length > 5 && topic.endsWith("s") ? topic.slice(0, -1) : topic)
+    .filter((topic) => !generic.has(topic));
 }
 
 function groupFactsForClaims(facts: GroundedFact[]) {
@@ -575,7 +645,8 @@ function salientTerms(text: string) {
   const stop = new Set([
     "additional", "answer", "arguing", "assessment", "available", "clinical", "current", "direct",
     "document", "documents", "evidence", "finding", "findings", "information", "patient", "patients",
-    "question", "record", "records", "report", "reported", "review", "source", "study", "that",
+    "establish", "missing", "pending", "question", "record", "records", "remain", "remains",
+    "report", "reported", "review", "show", "source", "study", "that",
     "the", "their", "this", "treatment", "whether", "with", "without", "while", "against", "before",
     "after", "older", "younger", "than", "years", "months", "weeks", "during", "into", "onto",
   ]);

@@ -19,7 +19,10 @@ import { assessEvidenceConfidence } from "@/lib/research/confidence";
 import { getLlmConfiguration } from "@/lib/llm";
 import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
 import { assembleResearchArtifacts } from "@/lib/research/artifacts";
+import { buildFallbackContradictions } from "@/lib/research/claims";
 import { normalizeEvidenceItems } from "@/lib/research/evidence-normalization";
+import { buildGroundedReport } from "@/lib/research/grounding";
+import { assertDocumentsBelongToSession } from "@/lib/research/isolation";
 import { extractGroundedFactsFromNormalizedEvidence } from "@/lib/research/normalized-grounding";
 import { cleanSearchChunks } from "@/lib/research/source-cleaning";
 import type { ResearchEventInput } from "@/lib/research/events";
@@ -65,6 +68,8 @@ export async function runResearchPipeline({
   session: ResearchSession;
   emit: PipelineEmitter;
 }) {
+  assertDocumentsBelongToSession(session.id, session.documents);
+
   const startedAt = Date.now();
   const selectedAgents = session.selectedAgents;
   const pageCount = session.documents.reduce((sum, document) => sum + document.pageCount, 0);
@@ -325,9 +330,6 @@ export async function runResearchPipeline({
           },
         });
       } catch (error) {
-        if (llmConfiguration.enabled) {
-          throw error;
-        }
         const fallback = fallbackSpecialist(
           agentId,
           error instanceof Error ? error.message : "The specialist did not return a result.",
@@ -365,6 +367,7 @@ export async function runResearchPipeline({
   const trial = specialistOutputs["trial-summarizer"] as TrialSummarizerAgentOutput;
 
   let debate: DebateConsensusOutput;
+  let consensusRecovered = false;
   if (selectedAgents.includes("debate-consensus")) {
     await emit({
       type: "agent.started",
@@ -378,15 +381,35 @@ export async function runResearchPipeline({
         evidenceCount: evidence.length,
       },
     });
-    debate = await runDebateAgent({
-      question: session.question,
-      literature,
-      drug,
-      adverse,
-      trial,
-      onFallback,
-      shouldUseProvider: () => modelAvailable,
-    });
+    try {
+      debate = await runDebateAgent({
+        question: session.question,
+        literature,
+        drug,
+        adverse,
+        trial,
+        onFallback,
+        shouldUseProvider: () => modelAvailable,
+      });
+    } catch (error) {
+      consensusRecovered = true;
+      debate = recoverDebateFromGroundedEvidence({
+        question: session.question,
+        facts: groundedFacts,
+        evidence,
+        error,
+      });
+      await emit({
+        type: "stage.progress",
+        phase: "consensus",
+        stageId: "debate-consensus",
+        message: "Consensus recovered from the completed specialist review",
+        data: {
+          progress: 88,
+          detail: "Using the preserved source-grounded findings without repeating the timed-out model call",
+        },
+      });
+    }
     await announceFallbackIfNeeded();
     debate = {
       ...debate,
@@ -407,9 +430,11 @@ export async function runResearchPipeline({
       phase: "consensus",
       stageId: "debate-consensus",
       agentId: "debate-consensus",
-      message: `${debate.agreements.length} agreements and ${debate.disagreements.length} disagreements mapped`,
+      message: consensusRecovered
+        ? "Consensus completed from preserved specialist evidence"
+        : `${debate.agreements.length} agreements and ${debate.disagreements.length} disagreements mapped`,
       data: {
-        currentTask: "Consensus complete",
+        currentTask: consensusRecovered ? "Source-grounded consensus recovered" : "Consensus complete",
         progress: 100,
         evidenceCount: debate.evidence.length,
         output: debate,
@@ -454,8 +479,8 @@ export async function runResearchPipeline({
         facts: groundedFacts,
         evidence,
         normalizedEvidence,
-        onFallback,
-        shouldUseProvider: () => modelAvailable,
+        onFallback: consensusRecovered ? undefined : onFallback,
+        shouldUseProvider: () => modelAvailable && !consensusRecovered,
         onAssemblyRecovery: async () => {
           await emit({
             type: "stage.progress",
@@ -734,6 +759,61 @@ function fallbackDebate(
     missingEvidence: ["Consensus review was disabled."],
     finalConsensus: `No formal consensus was generated for: ${question}`,
   };
+}
+
+function recoverDebateFromGroundedEvidence({
+  question,
+  facts,
+  evidence,
+  error,
+}: {
+  question: string;
+  facts: GroundedFact[];
+  evidence: EvidenceItem[];
+  error: unknown;
+}): DebateConsensusOutput {
+  const groundedReport = buildGroundedReport({ question, facts, evidence });
+  const explicitDisagreements = facts
+    .filter((fact) =>
+      fact.contentType === "discrepancy" &&
+      /\b(?:differ|disagree|conflict|contrast|whereas|while)\b/i.test(fact.text)
+    )
+    .map((fact) => fact.text);
+  const inferredDisagreements = buildFallbackContradictions(facts, evidence)
+    .map((conflict) => conflict.issue);
+  const missingEvidence = facts
+    .filter((fact) =>
+      ["limitation", "discrepancy", "unresolved_question"].includes(fact.contentType) ||
+      /\b(?:pending|awaiting|not yet (?:available|completed|performed|obtained)|remains? (?:unknown|uncertain|unresolved))\b/i.test(fact.text)
+    )
+    .map((fact) => fact.text);
+
+  return {
+    agentName: "Debate / Consensus Agent",
+    summary: "Consensus was reconstructed from the completed specialist review and source-grounded findings.",
+    confidence: "medium",
+    limitations: [
+      error instanceof Error
+        ? `The live consensus response was unavailable: ${error.message}`
+        : "The live consensus response was unavailable.",
+    ],
+    warnings: [RESEARCH_DISCLAIMER],
+    evidence: evidence.slice(0, 8),
+    agreements: uniqueStrings(groundedReport.keyFindings).slice(0, 6),
+    disagreements: uniqueStrings([
+      ...explicitDisagreements,
+      ...inferredDisagreements,
+    ]).slice(0, 4),
+    missingEvidence: uniqueStrings([
+      ...missingEvidence,
+      ...groundedReport.risksAndUncertainties,
+    ]).slice(0, 6),
+    finalConsensus: groundedReport.executiveSummary,
+  };
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
 function fallbackReport(debate: DebateConsensusOutput): ReportOutput {

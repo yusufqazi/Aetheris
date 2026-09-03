@@ -64,7 +64,10 @@ export class PdfExtractionError extends Error {
   }
 }
 
-export async function extractPdfDocument(file: File): Promise<UploadedDocument> {
+export async function extractPdfDocument(
+  file: File,
+  sessionId?: string,
+): Promise<UploadedDocument> {
   initializePdfWorker();
 
   if (workerConfigurationError) {
@@ -134,6 +137,7 @@ export async function extractPdfDocument(file: File): Promise<UploadedDocument> 
 
     return {
       id: nanoid(),
+      sessionId,
       name: file.name,
       size: file.size,
       pageCount: normalizedPages.length,

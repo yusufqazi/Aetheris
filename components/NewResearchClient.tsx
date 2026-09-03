@@ -89,7 +89,9 @@ export function NewResearchClient() {
   }
 
   function loadExampleSources() {
-    setDocuments(makeDemoDocuments());
+    setDocuments(
+      makeDemoDocuments().map((document) => ({ ...document, sessionId })),
+    );
     setUploadEvents([]);
     setError(null);
   }

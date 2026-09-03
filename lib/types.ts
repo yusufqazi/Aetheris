@@ -61,6 +61,7 @@ export interface DocumentPage {
 
 export interface UploadedDocument {
   id: string;
+  sessionId?: string;
   name: string;
   size: number;
   pageCount: number;

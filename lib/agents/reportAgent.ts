@@ -15,6 +15,7 @@ import {
   buildGroundedReport,
   isIncompletePrimaryAnswer,
   primaryAnswerConsistencyIssues,
+  primaryAnswerDeniesDisagreement,
   primaryAnswerCoverageIssues,
 } from "@/lib/research/grounding";
 import {
@@ -138,7 +139,16 @@ export async function runReportAgent(payload: {
           };
         }
         const coverageIssues = primaryAnswerCoverageIssues(output.directAnswer, question, facts);
-        const consistencyIssues = primaryAnswerConsistencyIssues(output.directAnswer, question, facts);
+        const consistencyIssues = primaryAnswerConsistencyIssues(
+          output.directAnswer,
+          question,
+          facts,
+          Math.max(
+            output.contradictions.length,
+            fallbackIntelligence.contradictions.length,
+          ),
+          fallbackIntelligence.structuredClaims?.map((claim) => claim.conclusion) ?? [],
+        );
         if (coverageIssues.length > 0 || consistencyIssues.length > 0) {
           return {
             valid: false,
@@ -175,19 +185,27 @@ export async function runReportAgent(payload: {
     ...toResearchIntelligence(generatedDirectorOutput, fallbackIntelligence, facts, question),
   }, evidence)
     ?? fallbackIntelligence;
-  const researchIntelligence = primaryAnswerConsistencyIssues(
+  const consistencyIssues = primaryAnswerConsistencyIssues(
     sanitizedIntelligence.directAnswer,
     question,
     facts,
-  ).length > 0
+    sanitizedIntelligence.contradictions.length,
+    sanitizedIntelligence.structuredClaims?.map((claim) => claim.conclusion) ?? [],
+  );
+  const researchIntelligence = consistencyIssues.length > 0
     ? {
         ...sanitizedIntelligence,
-        directAnswer: completeDirectAnswer(
-          payload.debate.finalConsensus,
-          fallbackIntelligence.directAnswer,
-          question,
-          facts,
-        ),
+        directAnswer: consistencyIssues.includes("supported-disagreement-denied")
+          ? recoverAcceptedDisagreement(
+              sanitizedIntelligence.directAnswer,
+              sanitizedIntelligence.contradictions,
+            )
+          : completeDirectAnswer(
+              payload.debate.finalConsensus,
+              fallbackIntelligence.directAnswer,
+              question,
+              facts,
+            ),
       }
     : sanitizedIntelligence;
   const synthesizedReport = buildGroundedReport({
@@ -301,6 +319,29 @@ function toResearchIntelligence(
     evidenceMappings: buildClaimEvidenceMappings(structuredClaims, facts),
     structuredClaims,
   };
+}
+
+function recoverAcceptedDisagreement(
+  answer: string,
+  contradictions: ResearchIntelligence["contradictions"],
+) {
+  const retainedSentences =
+    answer
+      .match(/[^.!?]+[.!?]+|[^.!?]+$/g)
+      ?.map((sentence) => sentence.trim())
+      .filter(
+        (sentence) =>
+          sentence.length > 0 && !primaryAnswerDeniesDisagreement(sentence),
+      ) ?? [];
+  const acceptedDisagreement = contradictions.find(
+    (contradiction) => contradiction.issue.trim().length > 0,
+  );
+
+  if (!acceptedDisagreement) return retainedSentences.join(" ");
+
+  const issue = acceptedDisagreement.issue.trim();
+  const completeIssue = /[.!?]$/.test(issue) ? issue : `${issue}.`;
+  return [...retainedSentences, completeIssue].join(" ");
 }
 
 function completeDirectAnswer(

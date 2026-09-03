@@ -92,6 +92,13 @@ function openQuestionFromSingleGap(value: string) {
     .trim();
   if (!text) return "";
   if (isNeutralPositionStatement(text)) return "";
+  const role = classifyStatementRole(text);
+  if (
+    ["recommendation_for", "recommendation_against"].includes(role) &&
+    !/\b(?:pending|await|not yet|unknown|uncertain|unclear|unresolved|until|unless|if obtained|if performed)\b/i.test(text)
+  ) {
+    return "";
+  }
   if (/^whether\b/i.test(text)) {
     const subject = cleanSubject(text.replace(/^whether\s+/i, ""));
     const question = `Does the available evidence establish whether ${lowercaseLeading(subject)}?`;
@@ -101,14 +108,6 @@ function openQuestionFromSingleGap(value: string) {
     const question = ensureQuestion(text);
     return openQuestionQualityIssues(question).length === 0 ? question : "";
   }
-  const role = classifyStatementRole(text);
-  if (
-    ["recommendation_for", "recommendation_against"].includes(role) &&
-    !/\b(?:pending|await|not yet|unknown|uncertain|unclear|unresolved|until|unless|if obtained|if performed)\b/i.test(text)
-  ) {
-    return "";
-  }
-
   const conditionalDecision = text.match(/^(.{8,160}?)\s+(?:until|pending|after)\s+(.{4,120}?)(?:,\s*(?:unless|if)\s+(.{3,100}))?$/i);
   if (conditionalDecision) {
     const condition = cleanSubject(conditionalDecision[2]);
@@ -200,7 +199,10 @@ function unresolvedEvidenceList(text: string) {
   const prefixed = text.match(/^(?:unresolved|pending|missing|outstanding)\s+.{1,50}?\s+(?:evidence|information|results?|data)\s*[:—-]?\s*(.+?)\s+(?:remain(?:s)?|are)\s+(?:relevant|required|needed|unresolved|pending)\b/i);
   const absent = text.match(/^(?:the\s+)?(?:record|chart|documents?|evidence)\s+(?:does|do)\s+not\s+yet\s+(?:contain|include|provide|document)\s+(.+)$/i);
   const decisionList = text.match(/^(.+?,\s*.+?)\s+remain(?:s)?\s+(?:relevant|required|needed|unresolved|pending)\s+(?:to|for|before)\s+(?:the\s+)?(?:discharge|management|treatment|clinical)?\s*decision\b/i);
-  return splitEvidenceList(prefixed?.[1] ?? absent?.[1] ?? decisionList?.[1] ?? "");
+  const explicitlyNeeded = text.match(/\b(?:chart|record|documents?|evidence)\s+(?:still\s+)?(?:needs?|requires?)\s*:\s*(.+)$/i);
+  return splitEvidenceList(
+    prefixed?.[1] ?? absent?.[1] ?? decisionList?.[1] ?? explicitlyNeeded?.[1] ?? "",
+  );
 }
 
 function splitEvidenceList(value: string) {
@@ -214,9 +216,16 @@ function splitEvidenceList(value: string) {
 
 function questionForPendingSubject(value: string) {
   const subject = cleanSubject(value);
+  const confirmationThat = subject.match(/^confirmation\s+that\s+(.+)$/i);
+  if (confirmationThat) {
+    return `Has it been confirmed that ${lowercaseLeading(cleanSubject(confirmationThat[1]))}?`;
+  }
   const confirmation = subject.match(/^confirmation\s+of\s+(.+)$/i);
   if (confirmation) {
     const confirmedSubject = cleanSubject(confirmation[1]);
+    if (/^that\s+/i.test(confirmedSubject)) {
+      return `Has it been confirmed ${lowercaseLeading(confirmedSubject)}?`;
+    }
     const stability = confirmedSubject.match(/^stability\s+(on|of|with)\s+(.+)$/i);
     return stability
       ? stability[1].toLowerCase() === "of"
@@ -228,6 +237,17 @@ function questionForPendingSubject(value: string) {
   if (evidenceOf) return questionForPendingSubject(evidenceOf[1]);
   const documentation = subject.match(/^documentation\s+of\s+(.+)$/i);
   if (documentation) return `What ${lowercaseLeading(cleanSubject(documentation[1]))} is documented?`;
+  const ambulatorySaturation = subject.match(/^(?:documented\s+)?oxygen\s+saturation\s+during\s+(.+?)(?:\s+if\s+(.+))?$/i);
+  if (ambulatorySaturation) {
+    const condition = ambulatorySaturation[2]
+      ? ` when ${lowercaseLeading(cleanSubject(ambulatorySaturation[2]))}`
+      : "";
+    return `What oxygen saturation is documented during ${lowercaseLeading(cleanSubject(ambulatorySaturation[1]))}${condition}?`;
+  }
+  const saturation = subject.match(/^(?:documented\s+)?(.+?\bsaturation)$/i);
+  if (saturation) {
+    return `What is the documented ${lowercaseLeading(cleanSubject(saturation[1]))}?`;
+  }
   const response = subject.match(/^(?:the\s+)?(?:patient'?s\s+)?response\s+to\s+(.+)$/i);
   if (response) return `What is the documented response to ${lowercaseLeading(cleanSubject(response[1]))}?`;
   const stability = subject.match(/^stability\s+of\s+(.+)$/i);
@@ -295,11 +315,17 @@ export function openQuestionQualityIssues(value: string) {
   if (/^(?:do not|start|begin|initiate|continue|hold|withhold|defer|delay|stop|recommend)\b/i.test(question)) {
     issues.push("recommendation-fragment");
   }
+  if (/^(?:would|should|will|can|could|may)\s+not\s+(?:arrange|commit|prescribe|proceed|start|begin|initiate|continue|use|administer)\b/i.test(question)) {
+    issues.push("recommendation-fragment");
+  }
   if (/^(?:is|are)\s+(?:start|begin|initiate|continue|hold|withhold|defer|delay|stop)\w*\b/i.test(question)) {
     issues.push("malformed-interrogative");
   }
   if (/^whether\b/i.test(question)) issues.push("whether-fragment");
   if (/^what (?:do|does)\b.{1,160}\b(?:is|are|was|were)\b.{0,80}\bshow\?/i.test(question)) {
+    issues.push("auxiliary-collision");
+  }
+  if (/^how (?:do|does)\b.{1,160}\b(?:is|are|was|were)\b.{0,100}\b(?:change|show)\b/i.test(question)) {
     issues.push("auxiliary-collision");
   }
   if (/^(?:is|are)\s+.{1,160}\b(?:is|are|was|were)\s+(?:suspected|possible|confirmed|excluded|established|available)\b/i.test(question)) {
@@ -375,6 +401,7 @@ export function openQuestionImpact(question: string, relatedFacts: GroundedFact[
 function questionSubject(question: string) {
   const value = question
     .replace(/[?]+$/, "")
+    .replace(/^what does (?:the )?missing evidence establish about\s+/i, "")
     .replace(/^(?:what do|what does|what is|what are|is|are|has|have|how does|how do)\s+/i, "")
     .replace(/\s+(?:show|confirmed|excluded|established|change on repeat measurement).*$/i, "")
     .trim();

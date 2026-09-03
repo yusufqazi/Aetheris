@@ -39,11 +39,13 @@ export function FileUploader({
     setProgress(4);
     setProgressMessage("Uploading source documents");
 
+    const selectedFiles = Array.from(fileList);
+
     try {
       const formData = new FormData();
       formData.append("sessionId", sessionId);
       formData.append("startingSequence", String(sequenceRef.current));
-      Array.from(fileList).forEach((file) => formData.append("files", file));
+      selectedFiles.forEach((file) => formData.append("files", file));
       const response = await fetch("/api/upload", { method: "POST", body: formData });
 
       if (!response.ok) {
@@ -52,6 +54,10 @@ export function FileUploader({
       }
 
       await readResearchEventStream(response, (event) => {
+        if (event.sessionId !== sessionId) {
+          throw new Error("A document response belonged to a different analysis and was rejected.");
+        }
+
         sequenceRef.current = Math.max(sequenceRef.current, event.sequence);
         onEvent(event);
         setProgressMessage(event.message);
@@ -59,6 +65,17 @@ export function FileUploader({
           setProgress((current) => event.data?.progress ?? current);
         }
         if (event.type === "documents.ready") {
+          const selectedManifest = new Set(
+            selectedFiles.map((file) => `${file.name}:${file.size}`),
+          );
+          const responseMatchesSelection = event.data.documents.every(
+            (document) =>
+              document.sessionId === sessionId &&
+              selectedManifest.has(`${document.name}:${document.size}`),
+          );
+          if (!responseMatchesSelection) {
+            throw new Error("Prepared documents did not match this analysis upload and were rejected.");
+          }
           onDocumentsChange([...documents, ...event.data.documents]);
           setProgress(100);
         }

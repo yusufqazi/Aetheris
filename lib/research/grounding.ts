@@ -290,20 +290,32 @@ export function primaryAnswerCoverageIssues(
   facts: GroundedFact[],
 ) {
   const coverage = assessPrimaryAnswerEvidence(question, facts);
-  return coverage.requestedParts.filter((part) =>
+  const issues = coverage.requestedParts.filter((part) =>
     !answerAddressesPart(answer, part, coverage.supportedParts.includes(part))
   ).map((part) => `missing-${part}`);
+  const urgentTreatment = (coverage.factsByPart.treatment ?? []).find((fact) =>
+    /\b(?:immediate|immediately|urgent|emergent|promptly|without delay|do not delay|should not be delayed|priority)\b/i.test(fact.text)
+  );
+  if (
+    urgentTreatment &&
+    !answerCoversRecommendationTarget(answer, urgentTreatment.text)
+  ) {
+    issues.push("missing-treatment-priority");
+  }
+  return issues;
 }
 
 export function primaryAnswerConsistencyIssues(
   answer: string,
   question: string,
   facts: GroundedFact[],
+  acceptedDisagreementCount = 0,
+  acceptedConclusions: string[] = [],
 ) {
   const coverage = assessPrimaryAnswerEvidence(question, facts);
   const issues: string[] = [];
   if (
-    coverage.supportedParts.includes("diagnosis") &&
+    (coverage.supportedParts.includes("diagnosis") || acceptedConclusions.some(isDiagnosticStatement)) &&
     /\b(?:diagnosis|cause|etiology)\b.{0,50}\b(?:cannot be determined|cannot be established|is unknown|is unclear|insufficient evidence)\b/i.test(answer)
   ) {
     issues.push("supported-diagnosis-denied");
@@ -315,9 +327,8 @@ export function primaryAnswerConsistencyIssues(
     issues.push("supported-disposition-denied");
   }
   if (
-    coverage.supportedParts.includes("disagreement") &&
-    (/\b(?:no|cannot determine|cannot be determined|no evidence of)\b.{0,50}\b(?:disagreement|conflict|difference)\b/i.test(answer) ||
-      /\b(?:disagreement|conflict|difference)\b.{0,50}\b(?:cannot be determined|cannot be established|is unknown|is unclear|insufficient evidence)\b/i.test(answer))
+    (coverage.supportedParts.includes("disagreement") || acceptedDisagreementCount > 0) &&
+    primaryAnswerDeniesDisagreement(answer)
   ) {
     issues.push("supported-disagreement-denied");
   }
@@ -329,6 +340,15 @@ export function primaryAnswerConsistencyIssues(
     issues.push("supported-evidence-gap-denied");
   }
   return issues;
+}
+
+export function primaryAnswerDeniesDisagreement(answer: string) {
+  return (
+    /\b(?:no|cannot determine|cannot be determined|no evidence of)\b.{0,50}\b(?:disagreement|conflict|difference)\b/i.test(answer) ||
+    /\b(?:disagreement|conflict|difference)\b.{0,50}\b(?:cannot be determined|cannot be established|is unknown|is unclear|insufficient evidence|unsupported|not supported)\b/i.test(
+      answer,
+    )
+  );
 }
 
 function isPrimaryAnswerFact(fact: GroundedFact) {
@@ -1018,9 +1038,29 @@ function rankDecisionsForAnswer(
 }
 
 function isDiagnosticFact(fact: GroundedFact) {
-  return /\b(?:diagnos(?:is|ed)|etiology|cause|strongly support\w*|consistent with|most consistent with|likely (?:multifactorial|due to|caused by|related to|represents?)|(?:volume depletion|dehydration|infection|exposure|medication-related injury)\b.{0,60}\b(?:suspected|important|possible)|may have worsened\b.{0,60}\b(?:perfusion|function|injury)|supports? (?:a|an|the)?\s*.{0,50}\bcomponent|raises? concern for\b.{0,80}\b(?:injury|disease|process|syndrome|condition)|favou?rs?\b.{0,80}\b(?:cause|etiology|process|injury|syndrome|disease|condition)|meets? (?:the )?criteria|leading (?:diagnosis|interpretation)|confirmed|cannot (?:definitively )?distinguish|remain(?:s|ed)? plausible|cannot exclude)\b/i.test(
-    `${fact.text} ${fact.excerpt}`,
-  );
+  return isDiagnosticStatement(`${fact.text} ${fact.excerpt}`);
+}
+
+function isDiagnosticStatement(text: string) {
+  return /\b(?:diagnos(?:is|ed)|etiology|caus(?:e|ed|ing)|due to|attributed to|strongly support\w*|consistent with|most consistent with|likely (?:multifactorial|due to|caused by|related to|represents?)|(?:volume depletion|dehydration|infection|exposure|medication-related injury)\b.{0,60}\b(?:suspected|important|possible)|may have worsened\b.{0,60}\b(?:perfusion|function|injury)|supports? (?:a|an|the)?\s*.{0,50}\bcomponent|raises? concern for\b.{0,80}\b(?:injury|disease|process|syndrome|condition)|favou?rs?\b.{0,80}\b(?:cause|etiology|process|injury|syndrome|disease|condition)|meets? (?:the )?criteria|leading (?:diagnosis|interpretation)|confirmed|cannot (?:definitively )?distinguish|remain(?:s|ed)? plausible|cannot exclude)\b/i.test(text);
+}
+
+function answerCoversRecommendationTarget(answer: string, recommendation: string) {
+  const action = CLINICAL_DECISION.exec(recommendation);
+  const actionIndex = action?.index ?? 0;
+  const targetWindow = action
+    ? `${recommendation.slice(Math.max(0, actionIndex - 100), actionIndex)} ${recommendation.slice(
+        actionIndex + action[0].length,
+        actionIndex + action[0].length + 100,
+      )}`
+    : recommendation;
+  const ignored = new Set([
+    "agree", "agreed", "delay", "delayed", "eligible", "immediate", "immediately",
+    "priority", "proceed", "recommended", "should", "urgent", "without",
+  ]);
+  const targetTerms = meaningfulTerms(targetWindow).filter((term) => !ignored.has(term));
+  const answerTerms = new Set(meaningfulTerms(answer));
+  return targetTerms.some((term) => answerTerms.has(term));
 }
 
 function isDispositionFact(fact: GroundedFact) {

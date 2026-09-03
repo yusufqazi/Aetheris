@@ -70,7 +70,7 @@ export async function POST(request: Request) {
           for (let index = 0; index < files.length; index += 1) {
             const file = files[index];
             try {
-              const document = await extractPdfDocument(file);
+              const document = await extractPdfDocument(file, sessionId);
               documents.push(document);
             } catch (error) {
               const failure = describePdfExtractionError(error, file.name);

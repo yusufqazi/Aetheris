@@ -15,6 +15,7 @@ import {
   type SessionPhase,
   type UploadedDocument,
 } from "@/lib/types";
+import { bindUnownedDocumentsToSession } from "@/lib/research/isolation";
 
 const STAGE_COPY: Record<PipelineStageId, { label: string; description: string }> = {
   uploading: {
@@ -137,6 +138,7 @@ export function createResearchSession({
   mode: ResearchSession["mode"];
 }): ResearchSession {
   const now = new Date().toISOString();
+  const scopedDocuments = bindUnownedDocumentsToSession(id, documents);
 
   return {
     id,
@@ -146,13 +148,13 @@ export function createResearchSession({
     status: "idle",
     mode,
     selectedAgents,
-    documents,
-    pipeline: createPipeline(selectedAgents, documents),
+    documents: scopedDocuments,
+    pipeline: createPipeline(selectedAgents, scopedDocuments),
     events: [],
     agentExecutions: createAgentExecutions(selectedAgents),
     evidence: [],
     reportSections: [],
-    metrics: metricsFromDocuments(documents),
+    metrics: metricsFromDocuments(scopedDocuments),
     confidence: undefined,
     error: null,
     results: undefined,
@@ -160,6 +162,10 @@ export function createResearchSession({
 }
 
 export function applyResearchEvent(session: ResearchSession, event: ResearchEvent) {
+  if (event.sessionId !== session.id) {
+    return session;
+  }
+
   if (session.events.some((item) => item.id === event.id)) {
     return session;
   }
@@ -350,7 +356,10 @@ export function normalizeResearchSession(value: unknown): ResearchSession | null
     return null;
   }
 
-  const documents = (raw.documents ?? []).map(normalizeDocument);
+  const documents = bindUnownedDocumentsToSession(
+    raw.id,
+    (raw.documents ?? []).map(normalizeDocument),
+  );
   const selectedAgents = (raw.selectedAgents ?? [...AGENT_IDS]).filter((agent): agent is AgentId =>
     AGENT_IDS.includes(agent as AgentId),
   );

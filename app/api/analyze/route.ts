@@ -2,6 +2,10 @@ import { after, NextResponse } from "next/server";
 
 import { getLlmConfiguration, hasLlmAccess } from "@/lib/llm";
 import { registerResearchJob, runRegisteredResearchJob } from "@/lib/research/jobs";
+import {
+  assertDocumentsBelongToSession,
+  ResearchIsolationError,
+} from "@/lib/research/isolation";
 import { analyzeRequestSchema } from "@/lib/research/schemas";
 import { createResearchSession } from "@/lib/research/session";
 import { saveSessionToSupabase } from "@/lib/supabase";
@@ -49,6 +53,15 @@ export async function POST(request: Request) {
   }
 
   const body = parsed.data;
+  try {
+    assertDocumentsBelongToSession(body.sessionId, body.documents);
+  } catch (error) {
+    if (error instanceof ResearchIsolationError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+    throw error;
+  }
+
   let session = createResearchSession({
     id: body.sessionId,
     question: body.question,

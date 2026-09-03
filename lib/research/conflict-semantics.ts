@@ -63,6 +63,9 @@ const SAFETY_INFORMATION =
 const UNCERTAINTY_LANGUAGE =
   /\b(?:cannot exclude|not confirmed|not established|possible|plausible|suspected|uncertain|unclear|unknown|pending|insufficient evidence)\b/i;
 
+const ELIGIBILITY_EVIDENCE =
+  /\b(?:no|without)\b.{0,120}\b(?:contraindicat|prohibition|barrier)\w*\b|\b(?:contraindicat|prohibition|barrier)\w*\b.{0,80}\b(?:not identified|not found|absent)\b/i;
+
 export type RecommendationAction = "proceed" | "delay" | "stop" | "restrict" | "monitor";
 export type RecommendationConflictKind = "direct" | "timing-or-threshold";
 export type StatementRole =
@@ -91,6 +94,9 @@ export function isNeutralPositionStatement(text: string) {
 export function classifyStatementRole(text: string): StatementRole {
   const value = normalize(text);
   if (!value || isNeutralPositionStatement(value)) return "neutral";
+  if (ELIGIBILITY_EVIDENCE.test(value)) {
+    return SAFETY_INFORMATION.test(value) ? "safety_information" : "observation";
+  }
 
   const action = recommendationAction(value);
   if (action === "proceed" || action === "monitor") return "recommendation_for";
@@ -107,7 +113,16 @@ export function recommendationAction(text: string): RecommendationAction | null 
   if (!original || isNeutralPositionStatement(original)) return null;
   const value = stripNeutralClarifications(original);
 
-  if (/\b(?:do not|should not|must not|recommend(?:s|ed)?\s+against)\b.{0,80}\b(?:start|begin|initiate|continue|use|administer)\w*\b/i.test(value)) {
+  if (ELIGIBILITY_EVIDENCE.test(value)) return null;
+  if (/\b(?:do not|should not|must not|would not)\s+(?:delay|defer|postpone|withhold)\w*\b/i.test(value)) {
+    return "proceed";
+  }
+
+  if (/\b(?:would|should|will|can|could|may)\s+not\s+(?:arrange|commit|prescribe|proceed|start|begin|initiate|continue|use|administer)\w*\b/i.test(value)) {
+    return /\b(?:before|pending|until|unless|without)\b/i.test(value) ? "delay" : "stop";
+  }
+
+  if (/\b(?:do not|should not|must not|recommend(?:s|ed)?\s+against)\b.{0,80}\b(?:add|administer|begin|continue|escalate|initiate|perform|proceed|start|undertake|use)\w*\b/i.test(value)) {
     return "stop";
   }
   if (/\b(?:no\b.{0,80}|not)\b(?:is|are|was|were)?\s*recommended\b|\b(?:is|are|was|were)\s+not\s+recommended\b/i.test(value)) {
@@ -155,6 +170,12 @@ export function normalizeRecommendation(text: string): NormalizedRecommendation 
 
 export function recommendationsMateriallyConflict(left: string, right: string) {
   if (!sameManagementTarget(left, right)) return false;
+  const leftRole = classifyStatementRole(left);
+  const rightRole = classifyStatementRole(right);
+  if (
+    !["recommendation_for", "recommendation_against"].includes(leftRole) ||
+    !["recommendation_for", "recommendation_against"].includes(rightRole)
+  ) return false;
   const leftAction = normalizeRecommendation(left).action;
   const rightAction = normalizeRecommendation(right).action;
   if (!leftAction || !rightAction || leftAction === rightAction) return false;

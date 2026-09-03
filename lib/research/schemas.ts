@@ -11,6 +11,7 @@ export const documentPageSchema = z.object({
 
 export const uploadedDocumentSchema = z.object({
   id: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
   name: z.string().min(1),
   size: z.number().nonnegative(),
   pageCount: z.number().int().positive(),
