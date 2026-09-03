@@ -1,3 +1,4 @@
+import "@napi-rs/canvas";
 import "pdfjs-dist/legacy/build/pdf.worker.mjs";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { nanoid } from "nanoid";
