@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 
 import {
   getResearchJob,
@@ -9,8 +9,9 @@ import { fetchSessionByIdFromSupabase } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 
-const STALE_RESEARCH_RUN_MS = 30_000;
+export const STALE_RESEARCH_RUN_MS = 6 * 60_000;
 
 export async function GET(
   request: Request,
@@ -41,7 +42,7 @@ export async function GET(
   // job is never duplicated.
   if (isStaleActiveSession(session)) {
     const resumedJob = registerResearchJob(session, accessToken);
-    void runRegisteredResearchJob(session.id, accessToken);
+    after(() => runRegisteredResearchJob(session.id, accessToken));
     return NextResponse.json({
       status: resumedJob.status,
       mode: resumedJob.session.mode,
@@ -61,7 +62,7 @@ export async function GET(
   });
 }
 
-function isStaleActiveSession(session: { status: string; updatedAt: string }) {
+export function isStaleActiveSession(session: { status: string; updatedAt: string }) {
   if (["idle", "completed", "error"].includes(session.status)) return false;
   const updatedAt = Date.parse(session.updatedAt);
   return Number.isFinite(updatedAt) && Date.now() - updatedAt > STALE_RESEARCH_RUN_MS;
