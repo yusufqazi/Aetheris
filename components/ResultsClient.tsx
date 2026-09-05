@@ -246,17 +246,8 @@ function AnalysisProgress({ session }: { session: ResearchSession }) {
 }
 
 function useAnalysisElapsedSeconds(session: ResearchSession) {
-  const activeStart = Object.values(session.agentExecutions)
-    .map((agent) => agent.startedAt)
-    .filter((value): value is string => Boolean(value))
-    .map((value) => new Date(value).getTime())
-    .concat(
-      session.pipeline
-        .map((stage) => stage.startedAt)
-        .filter((value): value is string => Boolean(value))
-        .map((value) => new Date(value).getTime()),
-    )
-    .reduce<number | null>((earliest, value) => earliest === null ? value : Math.min(earliest, value), null);
+  const analysisStartedAt = session.pipeline.find((stage) => stage.id === "chunking")?.startedAt;
+  const activeStart = analysisStartedAt ? new Date(analysisStartedAt).getTime() : null;
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {

@@ -2,6 +2,7 @@ import { RESEARCH_DISCLAIMER } from "@/lib/prompts";
 import {
   isClinicallyImportantUncertainty,
   openQuestionsFromGap,
+  reconcileTemporalEvidence,
 } from "@/lib/research/open-questions";
 import { cleanSourcePassage, isSourceNoise } from "@/lib/research/source-cleaning";
 import type {
@@ -19,8 +20,9 @@ import {
 } from "@/lib/research/primary-answer";
 import {
   classifyStatementRole,
+  groundedRecommendationConflictState,
   isNeutralPositionStatement,
-  recommendationsMateriallyConflict,
+  questionRequestsHistoricalDisagreement,
 } from "@/lib/research/conflict-semantics";
 import { isHistoricalContext } from "@/lib/research/semantic-quality";
 
@@ -120,15 +122,16 @@ export function isIncompletePrimaryAnswer(value: string) {
 }
 
 export function buildBestSupportedAnswer(question: string, facts: GroundedFact[]) {
-  const coverage = assessPrimaryAnswerEvidence(question, facts);
-  if (new Set(facts.map((fact) => fact.documentId)).size <= 1) {
+  const currentFacts = reconcileTemporalEvidence(facts);
+  const coverage = assessPrimaryAnswerEvidence(question, currentFacts);
+  if (new Set(currentFacts.map((fact) => fact.documentId)).size <= 1) {
     return buildSingleDocumentAnswer(question, coverage);
   }
   if (coverage.requestedParts.length >= 3) {
-    return buildEvidenceLimitedAnswer(coverage);
+    return buildEvidenceLimitedAnswer(coverage, question);
   }
   if (coverage.evidenceLimited) {
-    return buildEvidenceLimitedAnswer(coverage);
+    return buildEvidenceLimitedAnswer(coverage, question);
   }
 
   const answerFacts = coverage.eligibleFacts;
@@ -198,8 +201,9 @@ export function assessPrimaryAnswerEvidence(
   question: string,
   facts: GroundedFact[],
 ): PrimaryAnswerEvidenceAssessment {
+  const currentFacts = reconcileTemporalEvidence(facts);
   const requestedParts = requestedPrimaryAnswerParts(question);
-  const eligibleFacts = facts
+  const eligibleFacts = currentFacts
     .map(sanitizePrimaryAnswerFact)
     .filter((fact): fact is GroundedFact => Boolean(fact))
     .filter(isPrimaryAnswerFact);
@@ -218,7 +222,11 @@ export function assessPrimaryAnswerEvidence(
     return partFacts.some((left, index) =>
       partFacts.slice(index + 1).some((right) =>
         left.documentId !== right.documentId &&
-        recommendationsMateriallyConflict(left.text, right.text)
+        (() => {
+          const state = groundedRecommendationConflictState(left, right, currentFacts);
+          return state === "current" ||
+            (state === "historical-resolved" && questionRequestsHistoricalDisagreement(question));
+        })()
       )
     );
   });
@@ -301,6 +309,13 @@ export function primaryAnswerCoverageIssues(
     !answerCoversRecommendationTarget(answer, urgentTreatment.text)
   ) {
     issues.push("missing-treatment-priority");
+  }
+  if (
+    coverage.supportedParts.includes("disposition") &&
+    asksDirectDispositionQuestion(question) &&
+    !directlyAnswersDisposition(answer)
+  ) {
+    issues.push("indirect-disposition-answer");
   }
   return issues;
 }
@@ -432,11 +447,22 @@ function factSupportsAnswerPart(fact: GroundedFact, part: PrimaryAnswerPart) {
   }
 }
 
-function buildEvidenceLimitedAnswer(coverage: PrimaryAnswerEvidenceAssessment) {
+function buildEvidenceLimitedAnswer(
+  coverage: PrimaryAnswerEvidenceAssessment,
+  question: string,
+) {
   const disagreement = coverage.requestedParts.includes("disagreement")
-    ? findRecommendationDisagreement(coverage.factsByPart.disagreement ?? [])
+    ? findRecommendationDisagreement(
+        coverage.factsByPart.disagreement ?? [],
+        question,
+        coverage.eligibleFacts,
+      )
     : "";
-  const supportedSentences = coverage.supportedParts.flatMap((part) => {
+  const orderedSupportedParts = asksDirectDispositionQuestion(question) &&
+    coverage.supportedParts.includes("disposition")
+    ? ["disposition" as const, ...coverage.supportedParts.filter((part) => part !== "disposition")]
+    : coverage.supportedParts;
+  const supportedSentences = orderedSupportedParts.flatMap((part) => {
     const facts = coverage.factsByPart[part] ?? [];
     if (facts.length === 0) return [];
     const primary = facts[0];
@@ -450,7 +476,7 @@ function buildEvidenceLimitedAnswer(coverage: PrimaryAnswerEvidenceAssessment) {
         ? [synthesizeTreatmentPriority(treatmentFacts.slice(0, 3), true)]
         : [];
     }
-    if (part === "disposition") return [synthesizeDisposition(facts)];
+    if (part === "disposition") return [synthesizeDisposition(facts, question)];
     if (part === "disagreement") {
       return disagreement ? [disagreement.sentence] : [];
     }
@@ -653,6 +679,7 @@ export function buildGroundedReport({
   evidence: EvidenceItem[];
   executiveSummaryOverride?: string;
 }): ReportOutput {
+  facts = reconcileTemporalEvidence(facts);
   const interactions = facts.filter((fact) => fact.contentType === "interaction_concern");
   const efficacy = facts.filter((fact) =>
     (fact.contentType === "finding" || fact.contentType === "longitudinal_change") &&
@@ -1117,29 +1144,67 @@ function synthesizeTreatmentPriority(decisions: GroundedFact[], requested: boole
     : "";
 }
 
-function synthesizeDisposition(facts: GroundedFact[]) {
+function synthesizeDisposition(facts: GroundedFact[], question = "") {
   const decisions = facts.filter((fact) => isDispositionFact(fact));
   const disagreement = findRecommendationDisagreement(decisions);
   if (disagreement) return disagreement.sentence;
-  if (decisions.length > 0) return uniqueSentences(decisions.slice(0, 2).map(attributedFactSentence)).join(" ");
+  if (decisions.length > 0) {
+    const explicitDecision = decisions.find((fact) =>
+      /\b(?:ready|not ready)\s+for\s+(?:discharge|transfer|release)\b|\b(?:no objection to|defer|delay)\s+discharge\b|\bdischarge\b.{0,35}\b(?:reasonable|appropriate|acceptable|supported)\b/i.test(`${fact.text} ${fact.excerpt}`)
+    );
+    const ordered = explicitDecision
+      ? [explicitDecision, ...decisions.filter((fact) => fact.id !== explicitDecision.id)]
+      : decisions;
+    const detail = uniqueSentences(ordered.slice(0, 2).map(attributedFactSentence)).join(" ");
+    if (!asksDirectDispositionQuestion(question)) return detail;
+    const current = ordered[0];
+    const text = `${current.text} ${current.excerpt}`;
+    if (/\b(?:not ready for discharge|defer discharge|delay discharge|remain(?:s)? inpatient|additional inpatient)\b/i.test(text)) {
+      return `No, based on the latest available records, the patient does not appear ready for discharge. ${detail}`;
+    }
+    if (/\b(?:ready for discharge|no objection to discharge|discharge (?:is |appears )?(?:reasonable|appropriate|acceptable|supported)|may be discharged|can be discharged)\b/i.test(text)) {
+      return `Yes, based on the latest available records, the patient appears ready for discharge. ${detail}`;
+    }
+    return `Not yet; the latest available records do not establish unconditional discharge readiness. ${detail}`;
+  }
   return "The available evidence does not establish discharge or disposition readiness.";
 }
 
-function findRecommendationDisagreement(decisions: GroundedFact[]) {
+function findRecommendationDisagreement(
+  decisions: GroundedFact[],
+  question = "",
+  allFacts: GroundedFact[] = decisions,
+) {
   for (let leftIndex = 0; leftIndex < decisions.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < decisions.length; rightIndex += 1) {
       const left = decisions[leftIndex];
       const right = decisions[rightIndex];
-      if (left.documentId === right.documentId || !recommendationsMateriallyConflict(left.text, right.text)) {
-        continue;
-      }
+      if (left.documentId === right.documentId) continue;
+      const state = groundedRecommendationConflictState(left, right, allFacts);
+      if (
+        state === "invalid" ||
+        (state === "historical-resolved" && !questionRequestsHistoricalDisagreement(question))
+      ) continue;
+      const position = `${attributedFactSentence(left)} In contrast, ${attributedFactSentence(right)}`;
       return {
-        sentence: `${attributedFactSentence(left)} In contrast, ${attributedFactSentence(right)}`,
+        sentence: state === "historical-resolved"
+          ? `Earlier in the record, ${lowercaseFirst(position)} Later records show that this difference was no longer an active unresolved conflict.`
+          : position,
         factIds: [left.id, right.id],
       };
     }
   }
   return "";
+}
+
+function asksDirectDispositionQuestion(question: string) {
+  return /\b(?:is|are)\s+(?:this|the)\s+(?:patient|person|individual)\b.{0,60}\bready\s+for\s+(?:discharge|transfer|release)\b|\b(?:can|should)\s+(?:this|the)\s+(?:patient|person|individual)\b.{0,50}\b(?:be\s+)?discharg/i.test(question);
+}
+
+function directlyAnswersDisposition(answer: string) {
+  const firstSentence = answer.match(/^[^.!?]+[.!?]/)?.[0] ?? answer;
+  return /^(?:yes|no|not yet)\b/i.test(firstSentence.trim()) ||
+    /\b(?:ready|not ready)\s+for\s+(?:discharge|transfer|release)\b|\bdischarge\b.{0,35}\b(?:reasonable|appropriate|acceptable|supported|not advised|deferred|delayed)\b/i.test(firstSentence);
 }
 
 function synthesizeTradeoff(

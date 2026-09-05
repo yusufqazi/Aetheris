@@ -1,3 +1,10 @@
+import type { GroundedFact } from "@/lib/types";
+import {
+  compareClinicalSourceOrder,
+  isLaterClinicalUpdate,
+  sameClinicalSource,
+} from "@/lib/research/chronology";
+
 const SUBJECT_STOP_WORDS = new Set([
   "additional",
   "assessment",
@@ -68,6 +75,7 @@ const ELIGIBILITY_EVIDENCE =
 
 export type RecommendationAction = "proceed" | "delay" | "stop" | "restrict" | "monitor";
 export type RecommendationConflictKind = "direct" | "timing-or-threshold";
+export type GroundedRecommendationConflictState = "current" | "historical-resolved" | "invalid";
 export type StatementRole =
   | "recommendation_for"
   | "recommendation_against"
@@ -114,6 +122,9 @@ export function recommendationAction(text: string): RecommendationAction | null 
   const value = stripNeutralClarifications(original);
 
   if (ELIGIBILITY_EVIDENCE.test(value)) return null;
+  if (/\bno objection to\b.{0,80}\b(?:discharg|proceed|transfer|start|begin|initiat|continu|use|administer)\w*\b/i.test(value)) {
+    return "proceed";
+  }
   if (/\b(?:do not|should not|must not|would not)\s+(?:delay|defer|postpone|withhold)\w*\b/i.test(value)) {
     return "proceed";
   }
@@ -176,11 +187,17 @@ export function recommendationsMateriallyConflict(left: string, right: string) {
     !["recommendation_for", "recommendation_against"].includes(leftRole) ||
     !["recommendation_for", "recommendation_against"].includes(rightRole)
   ) return false;
-  const leftAction = normalizeRecommendation(left).action;
-  const rightAction = normalizeRecommendation(right).action;
+  const leftRecommendation = normalizeRecommendation(left);
+  const rightRecommendation = normalizeRecommendation(right);
+  if (conditionsAreDistinct(leftRecommendation.conditions, rightRecommendation.conditions)) {
+    return false;
+  }
+  const leftAction = leftRecommendation.action;
+  const rightAction = rightRecommendation.action;
   if (!leftAction || !rightAction) return false;
   if (leftRole === rightRole) {
-    return sameStanceBoundaryConflict(left, right, leftAction, rightAction);
+    return numericRecommendationTargetsConflict(left, right) ||
+      sameStanceBoundaryConflict(left, right, leftAction, rightAction);
   }
   if (leftAction === rightAction) return false;
 
@@ -193,6 +210,66 @@ export function recommendationsMateriallyConflict(left: string, right: string) {
   if (!conflict) return false;
 
   return !shareCompatibleTimingBoundary(left, right);
+}
+
+function conditionsAreDistinct(left: string[], right: string[]) {
+  const leftBranches = left.filter((condition) => /\b(?:if|unless|when)\b/i.test(condition));
+  const rightBranches = right.filter((condition) => /\b(?:if|unless|when)\b/i.test(condition));
+  if (leftBranches.length === 0 || rightBranches.length === 0) return false;
+  const leftTerms = subjectTokens(leftBranches.join(" "));
+  const rightTerms = subjectTokens(rightBranches.join(" "));
+  if (leftTerms.length === 0 || rightTerms.length === 0) return false;
+  return intersection(leftTerms, rightTerms).length === 0;
+}
+
+export function groundedRecommendationsMateriallyConflict(
+  left: GroundedFact,
+  right: GroundedFact,
+  facts: GroundedFact[] = [left, right],
+) {
+  return groundedRecommendationConflictState(left, right, facts) === "current";
+}
+
+export function groundedRecommendationConflictState(
+  left: GroundedFact,
+  right: GroundedFact,
+  facts: GroundedFact[] = [left, right],
+): GroundedRecommendationConflictState {
+  if (!recommendationsMateriallyConflict(left.text, right.text)) return "invalid";
+  const order = compareClinicalSourceOrder(left, right);
+  if (order > 0 && isLaterClinicalUpdate(left, right)) return "invalid";
+  if (order < 0 && isLaterClinicalUpdate(right, left)) return "invalid";
+
+  const latestLeft = latestRecommendationForSource(left, facts);
+  const latestRight = latestRecommendationForSource(right, facts);
+  const wasUpdated = latestLeft.id !== left.id || latestRight.id !== right.id;
+  if (wasUpdated && !recommendationsMateriallyConflict(latestLeft.text, latestRight.text)) {
+    return "historical-resolved";
+  }
+  if (laterSourcePositionsConverge(left, right, facts)) return "historical-resolved";
+  return "current";
+}
+
+export function questionRequestsHistoricalDisagreement(question: string) {
+  return /\b(?:where|how|what)\s+(?:did|had|were|was)\b.{0,120}\b(?:disagree|differ|conflict)\w*\b|\b(?:historical|earlier|previous|previously|over time)\b.{0,80}\b(?:disagree|disagreement|differ|conflict)\w*\b/i.test(question);
+}
+
+function latestRecommendationForSource(reference: GroundedFact, facts: GroundedFact[]) {
+  return facts.reduce((latest, candidate) => {
+    if (
+      !["recommendation_for", "recommendation_against"].includes(classifyStatementRole(candidate.text)) ||
+      !sameManagementTarget(reference.text, candidate.text) ||
+      !isSameSource(reference, candidate) ||
+      compareClinicalSourceOrder(candidate, latest) <= 0
+    ) {
+      return latest;
+    }
+    return candidate;
+  }, reference);
+}
+
+function isSameSource(left: GroundedFact, right: GroundedFact) {
+  return sameClinicalSource(left, right);
 }
 
 export function recommendationConflictKind(left: string, right: string): RecommendationConflictKind | null {
@@ -230,7 +307,8 @@ export function sameManagementTarget(left: string, right: string) {
   const rightTargets = managementTargetTokens(right);
   const sharedTargets = intersection(leftTargets, rightTargets);
 
-  return sharedTargets.length >= 2 || sharedTargets.some(isDistinctiveTarget);
+  return sharedTargets.length >= 2 || sharedTargets.some(isDistinctiveTarget) ||
+    shareDecisionMetric(left, right);
 }
 
 function decisionObjects(text: string) {
@@ -342,6 +420,76 @@ function sameStanceBoundaryConflict(
   if (leftBoundary.length === 0 || rightBoundary.length === 0) return false;
   if (intersection(leftBoundary, rightBoundary).length > 0) return false;
   return leftAction !== rightAction || leftAction === "delay";
+}
+
+function laterSourcePositionsConverge(
+  left: GroundedFact,
+  right: GroundedFact,
+  facts: GroundedFact[],
+) {
+  const laterLeft = laterRecommendationsForSource(left, facts);
+  const laterRight = laterRecommendationsForSource(right, facts);
+  return laterLeft.some((leftUpdate) => laterRight.some((rightUpdate) =>
+    leftUpdate.id !== rightUpdate.id &&
+    sameManagementTarget(leftUpdate.text, rightUpdate.text) &&
+    !recommendationsMateriallyConflict(leftUpdate.text, rightUpdate.text)
+  ));
+}
+
+function laterRecommendationsForSource(reference: GroundedFact, facts: GroundedFact[]) {
+  return facts.filter((candidate) =>
+    candidate.id !== reference.id &&
+    ["recommendation_for", "recommendation_against"].includes(classifyStatementRole(candidate.text)) &&
+    isSameSource(reference, candidate) &&
+    compareClinicalSourceOrder(candidate, reference) > 0
+  );
+}
+
+function shareDecisionMetric(left: string, right: string) {
+  const leftTargets = recommendationNumericTargets(left);
+  const rightTargets = recommendationNumericTargets(right);
+  return leftTargets.some((leftTarget) =>
+    rightTargets.some((rightTarget) => leftTarget.unit === rightTarget.unit)
+  );
+}
+
+function numericRecommendationTargetsConflict(left: string, right: string) {
+  const leftTargets = recommendationNumericTargets(left);
+  const rightTargets = recommendationNumericTargets(right);
+  return leftTargets.some((leftTarget) => rightTargets.some((rightTarget) =>
+    leftTarget.unit === rightTarget.unit &&
+    (leftTarget.maximum < rightTarget.minimum || rightTarget.maximum < leftTarget.minimum)
+  ));
+}
+
+function recommendationNumericTargets(text: string) {
+  if (!/\b(?:dose|dosage|frequency|goal|intensity|limit|range|rate|target)\b/i.test(text)) return [];
+  const normalized = text.replace(/[–—]/g, "-");
+  const targets: Array<{ minimum: number; maximum: number; unit: string }> = [];
+  const ranges = normalized.matchAll(
+    /\b(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)\s*([a-zA-Z%]+(?:\s*\/\s*[a-zA-Z]+)?)/g,
+  );
+  for (const match of ranges) {
+    targets.push({
+      minimum: Number(match[1]),
+      maximum: Number(match[2]),
+      unit: match[3].replace(/\s+/g, "").toLowerCase(),
+    });
+  }
+  if (targets.length > 0) return targets;
+
+  const singles = normalized.matchAll(
+    /\b(\d+(?:\.\d+)?)\s*([a-zA-Z%]+(?:\s*\/\s*[a-zA-Z]+)?)/g,
+  );
+  for (const match of singles) {
+    const value = Number(match[1]);
+    targets.push({
+      minimum: value,
+      maximum: value,
+      unit: match[2].replace(/\s+/g, "").toLowerCase(),
+    });
+  }
+  return targets;
 }
 
 function decisionBoundaryTokens(text: string) {

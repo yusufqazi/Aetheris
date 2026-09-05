@@ -30,7 +30,10 @@ import { researchDirectorOutputSchema } from "@/lib/research/schemas";
 import { semanticFamily, semanticTopics } from "@/lib/research/evidence-relationships";
 import {
   isGenericOpenQuestion,
+  isOpenQuestionAnswered,
+  openQuestionsFromMissingEvidence,
   openQuestionQualityIssues,
+  reconcileTemporalEvidence,
 } from "@/lib/research/open-questions";
 import {
   containsPrimaryAnswerSourceLeakage,
@@ -39,6 +42,9 @@ import {
 } from "@/lib/research/primary-answer";
 import { normalizedEvidenceForModel } from "@/lib/research/evidence-normalization";
 import type { EvidenceItem, GroundedFact, ResearchIntelligence } from "@/lib/types";
+
+export const REPORT_PROVIDER_TIMEOUT_MS = 40_000;
+export const REPORT_PROVIDER_MAX_RETRIES = 0;
 
 export async function runReportAgent(payload: {
   question: string;
@@ -54,7 +60,17 @@ export async function runReportAgent(payload: {
   shouldUseProvider?: () => boolean;
   onAssemblyRecovery?: (error: unknown) => void | Promise<void>;
 }) {
-  const { question, facts, evidence, onFallback, shouldUseProvider } = payload;
+  const { question, evidence, onFallback, shouldUseProvider } = payload;
+  const facts = reconcileTemporalEvidence(payload.facts, evidence);
+  const debate = {
+    ...payload.debate,
+    missingEvidence: payload.debate.missingEvidence.filter((item) => {
+      const questions = openQuestionsFromMissingEvidence(item);
+      return questions.length === 0 || questions.some((openQuestion) =>
+        !isOpenQuestionAnswered(openQuestion, facts, evidence)
+      );
+    }),
+  };
   const primaryAnswerCoverage = assessPrimaryAnswerEvidence(question, facts);
   const sourceDocumentCount = new Set(evidence.map((item) => item.documentId)).size;
   const groundedReport = buildGroundedReport({ question, facts, evidence });
@@ -65,7 +81,7 @@ export async function runReportAgent(payload: {
     directAnswer: groundedReport.executiveSummary,
     uncertainties: groundedReport.risksAndUncertainties,
     followUpQuestions: groundedReport.recommendedFollowUpQuestions,
-    consensus: payload.debate,
+    consensus: debate,
   });
   const modelPayload = {
     question,
@@ -110,11 +126,11 @@ export async function runReportAgent(payload: {
         findings: payload.trial.findings,
       },
       consensus: {
-        summary: payload.debate.summary,
-        agreements: payload.debate.agreements,
-        disagreements: payload.debate.disagreements,
-        missingEvidence: payload.debate.missingEvidence,
-        finalConsensus: payload.debate.finalConsensus,
+        summary: debate.summary,
+        agreements: debate.agreements,
+        disagreements: debate.disagreements,
+        missingEvidence: debate.missingEvidence,
+        finalConsensus: debate.finalConsensus,
       },
     },
   };
@@ -122,6 +138,7 @@ export async function runReportAgent(payload: {
   type ResearchDirectorOutput = z.infer<typeof researchDirectorOutputSchema>;
   const fallbackDirectorOutput = toResearchDirectorOutput(fallbackIntelligence);
   let generatedDirectorOutput: ResearchDirectorOutput;
+  const generationStartedAt = Date.now();
   try {
     generatedDirectorOutput = await runStructuredGeneration<ResearchDirectorOutput>({
       system: getAgentPrompt("report-generation"),
@@ -167,6 +184,10 @@ export async function runReportAgent(payload: {
       onFallback,
       shouldUseProvider,
       maxAttempts: 2,
+      openAiRequestPolicy: {
+        timeoutMs: REPORT_PROVIDER_TIMEOUT_MS,
+        maxRetries: REPORT_PROVIDER_MAX_RETRIES,
+      },
       fallback: () => fallbackDirectorOutput,
     });
   } catch (error) {
@@ -174,16 +195,17 @@ export async function runReportAgent(payload: {
     // Preserve that live AI work and finish its grounded presentation
     // instead of failing the entire run because the final formatting call lost
     // its network connection.
+    logReportRecovery(error, generationStartedAt);
     await payload.onAssemblyRecovery?.(error);
     generatedDirectorOutput = {
       ...fallbackDirectorOutput,
-      directAnswer: payload.debate.finalConsensus.trim() || fallbackDirectorOutput.directAnswer,
+      directAnswer: debate.finalConsensus.trim() || fallbackDirectorOutput.directAnswer,
     };
   }
 
   const sanitizedIntelligence = sanitizeResearchIntelligence({
     ...toResearchIntelligence(generatedDirectorOutput, fallbackIntelligence, facts, question),
-  }, evidence)
+  }, evidence, facts)
     ?? fallbackIntelligence;
   const consistencyIssues = primaryAnswerConsistencyIssues(
     sanitizedIntelligence.directAnswer,
@@ -201,7 +223,7 @@ export async function runReportAgent(payload: {
               sanitizedIntelligence.contradictions,
             )
           : completeDirectAnswer(
-              payload.debate.finalConsensus,
+              debate.finalConsensus,
               fallbackIntelligence.directAnswer,
               question,
               facts,
@@ -234,6 +256,20 @@ export async function runReportAgent(payload: {
     markdownReport: synthesizedReport.markdownReport,
     researchIntelligence,
   };
+}
+
+function logReportRecovery(error: unknown, startedAt: number) {
+  if (process.env.NODE_ENV === "test") return;
+  const message = error instanceof Error ? error.message : String(error);
+  const category = /timeout|timed out|did not respond before/i.test(message)
+    ? "provider_timeout"
+    : /schema validation|grounding checks|too vague|insufficiently grounded/i.test(message)
+      ? "schema_or_quality_rejection"
+      : "provider_api_error";
+  console.warn("[Aetheris report] Deterministic report recovery activated", {
+    category,
+    elapsedMs: Date.now() - startedAt,
+  });
 }
 
 function toResearchDirectorOutput(intelligence: ResearchIntelligence) {

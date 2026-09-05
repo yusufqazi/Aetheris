@@ -1,15 +1,24 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/llm", () => ({
-  runStructuredGeneration: vi.fn().mockRejectedValue(new Error("fetch failed")),
+  runStructuredGeneration: vi.fn().mockRejectedValue(new Error("provider request timed out")),
 }));
 
-import { runReportAgent } from "@/lib/agents/reportAgent";
+import { runStructuredGeneration } from "@/lib/llm";
+import {
+  REPORT_PROVIDER_MAX_RETRIES,
+  REPORT_PROVIDER_TIMEOUT_MS,
+  runReportAgent,
+} from "@/lib/agents/reportAgent";
 import { makeDemoSession } from "@/lib/demo-data";
 import { normalizeEvidenceItems } from "@/lib/research/evidence-normalization";
 import type { EvidenceItem, GroundedFact } from "@/lib/types";
 
 describe("report assembly recovery", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("completes from preserved specialist outputs when the final model call disconnects", async () => {
     const session = makeDemoSession();
     const results = session.results;
@@ -30,6 +39,13 @@ describe("report assembly recovery", () => {
     });
 
     expect(onAssemblyRecovery).toHaveBeenCalledOnce();
+    expect(runStructuredGeneration).toHaveBeenCalledOnce();
+    expect(runStructuredGeneration).toHaveBeenCalledWith(expect.objectContaining({
+      openAiRequestPolicy: {
+        timeoutMs: REPORT_PROVIDER_TIMEOUT_MS,
+        maxRetries: REPORT_PROVIDER_MAX_RETRIES,
+      },
+    }));
     expect(report.executiveSummary).toMatch(/evidence|interaction|safety|source/i);
     expect(report.keyFindings.length).toBeGreaterThan(0);
     expect(report.evidence.length).toBeGreaterThan(0);
@@ -102,6 +118,7 @@ describe("report assembly recovery", () => {
 
     expect(report.researchIntelligence?.contradictions).toHaveLength(1);
     expect(report.researchIntelligence?.decisionChangingUnknowns.length).toBeGreaterThan(0);
+    expect(runStructuredGeneration).toHaveBeenCalledOnce();
     expect(report.executiveSummary).toMatch(/continuing|current treatment intensity/i);
     expect(report.executiveSummary).toMatch(/reducing|reduce/i);
     expect(report.executiveSummary).toMatch(/response to oral therapy|renal function/i);

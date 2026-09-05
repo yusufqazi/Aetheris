@@ -34,11 +34,13 @@ import {
   buildBestSupportedAnswer,
   isClinicallyMaterialRecommendation,
   isIncompletePrimaryAnswer,
+  primaryAnswerDeniesDisagreement,
   primaryAnswerConsistencyIssues,
   primaryAnswerCoverageIssues,
 } from "@/lib/research/grounding";
 import {
   classifyStatementRole,
+  groundedRecommendationConflictState,
   isNeutralPositionStatement,
   numericOutcomeDiffers,
   recommendationConflictKind,
@@ -46,6 +48,7 @@ import {
   sameClinicalQuestion,
   sameManagementTarget,
   sameOutcomeQuestion,
+  questionRequestsHistoricalDisagreement,
 } from "@/lib/research/conflict-semantics";
 import {
   evidenceNeededForOpenQuestion,
@@ -57,6 +60,7 @@ import {
   openQuestionsFromGap,
   openQuestionImpact,
   openQuestionQualityIssues,
+  reconcileTemporalEvidence,
 } from "@/lib/research/open-questions";
 import {
   claimEvidenceAlignmentIssues,
@@ -64,6 +68,8 @@ import {
   isMetadataOnly,
   proseQualityIssues,
 } from "@/lib/research/semantic-quality";
+import { sanitizeResearchIntelligence } from "@/lib/research/intelligence";
+import { compareClinicalSourceOrder } from "@/lib/research/chronology";
 
 export type SupportLabel =
   | "Strongly supported"
@@ -152,9 +158,16 @@ export interface InvestigationData {
 
 export function buildInvestigationData(session: ResearchSession): InvestigationData {
   const report = session.results?.reportGeneration;
-  const intelligence = report?.researchIntelligence;
   const citations = getSessionCitations(session);
-  const facts = session.results?.groundedFacts ?? [];
+  const facts = reconcileTemporalEvidence(
+    session.results?.groundedFacts ?? [],
+    session.evidence,
+  );
+  const intelligence = sanitizeResearchIntelligence(
+    report?.researchIntelligence,
+    session.evidence,
+    facts,
+  );
   const focus = questionFocus(session.question);
   const generatedThemes = intelligence?.structuredClaims
     ?.map((claim) => createClinicalFindingTitle({
@@ -210,13 +223,13 @@ export function buildInvestigationData(session: ResearchSession): InvestigationD
       finding.citationIds.length > 0 && isGeneratedFindingReviewable(finding.statement)
     );
   const conflicts = uniqueConflicts([
-    ...buildCrossDocumentConflicts(facts, citations),
+    ...buildCrossDocumentConflicts(facts, citations, session.question),
     ...conflictFacts.map((fact) => conflictFromFact(fact, citations, facts)),
     ...(intelligence?.contradictions ?? [])
       .filter((item) => !looksLongitudinal(`${item.issue} ${item.reconciliation}`))
       .map((item, index) => conflictFromIntelligence(item, index, citations)),
   ])
-    .filter(isReviewableConflict)
+    .filter((item) => isReviewableConflict(item, citations, facts, session.question))
     .slice(0, 6)
     .map((item) => attachRelationships(item, "conflict", citations, facts, session));
   const changes = uniqueChanges([
@@ -248,6 +261,8 @@ export function buildInvestigationData(session: ResearchSession): InvestigationD
     intelligence?.directAnswer.trim() || report?.executiveSummary || "The uploaded evidence did not produce a direct answer.",
     facts,
     session.question,
+    conflicts,
+    findings.map((finding) => finding.statement),
   );
   const support = primarySupport(
     directAnswer,
@@ -674,7 +689,11 @@ function conflictFromIntelligence(
   };
 }
 
-function buildCrossDocumentConflicts(facts: GroundedFact[], citations: Citation[]) {
+function buildCrossDocumentConflicts(
+  facts: GroundedFact[],
+  citations: Citation[],
+  question: string,
+) {
   const candidates = facts.filter((fact) =>
     !isNeutralPositionStatement(fact.text) &&
     !isHistoricalContext(`${fact.documentName} ${fact.text} ${fact.excerpt}`) &&
@@ -690,7 +709,7 @@ function buildCrossDocumentConflicts(facts: GroundedFact[], citations: Citation[
         left.documentId === right.documentId &&
         (!left.sourceSection || !right.sourceSection || left.sourceSection === right.sourceSection)
       ) continue;
-      const comparison = compareConflictPair(left, right);
+      const comparison = compareConflictPair(left, right, facts, question);
       if (!comparison) continue;
       const positions = [left, right].map((fact) => ({
         documentName: factSourceLabel(fact),
@@ -715,19 +734,33 @@ function buildCrossDocumentConflicts(facts: GroundedFact[], citations: Citation[
   return conflicts;
 }
 
-function compareConflictPair(left: GroundedFact, right: GroundedFact) {
+function compareConflictPair(
+  left: GroundedFact,
+  right: GroundedFact,
+  facts: GroundedFact[],
+  question: string,
+) {
   const leftText = `${left.text} ${left.excerpt}`;
   const rightText = `${right.text} ${right.excerpt}`;
   const leftPolarity = evidencePolarity(leftText);
   const rightPolarity = evidencePolarity(rightText);
   const sourceRolesDiffer = sourceRole(left) !== sourceRole(right) && sourceRole(left) !== "other" && sourceRole(right) !== "other";
 
-  if (recommendationsMateriallyConflict(leftText, rightText)) {
+  const recommendationState = groundedRecommendationConflictState(left, right, facts);
+  if (
+    recommendationState === "current" ||
+    (
+      recommendationState === "historical-resolved" &&
+      questionRequestsHistoricalDisagreement(question)
+    )
+  ) {
     const kind = recommendationConflictKind(leftText, rightText);
     return {
       type: "Recommendation disagreement" as const,
       statement: `${left.documentName} states ${lowercaseLeading(polishFindingStatement(left.text))} In contrast, ${right.documentName} states ${lowercaseLeading(polishFindingStatement(right.text))}`,
-      explanation: kind === "timing-or-threshold"
+      explanation: recommendationState === "historical-resolved"
+        ? "This was a genuine earlier difference for the same decision, but later records show that the source positions converged; it is historical rather than currently unresolved."
+        : kind === "timing-or-threshold"
         ? "The recommended next step differs because the sources apply different timing thresholds, so their recommendations must remain separately attributed."
         : "The recommended next step depends on which source context applies, so the two recommendations should not be combined into one instruction.",
     };
@@ -1009,27 +1042,44 @@ function isReviewableFindingStatement(statement: string) {
   return !(words.length <= 7 && titleWords / words.length >= 0.7 && !hasComparison);
 }
 
-function isReviewableConflict(conflict: InvestigationConflict) {
+function isReviewableConflict(
+  conflict: InvestigationConflict,
+  citations: Citation[],
+  facts: GroundedFact[],
+  question: string,
+) {
   if (/^(?:documentation discrepancy|potential contradiction|conflict|inconsistency|source disagreement|outcome disagreement)[.!]?$/i.test(conflict.statement.trim())) {
     return false;
   }
   const positionSources = new Set(conflict.positions.map((position) => position.documentName));
   const distinctCitations = new Set(conflict.citationIds);
   const hasGenuinePair = conflict.positions.some((left, index) =>
-    conflict.positions.slice(index + 1).some((right) =>
-      recommendationsMateriallyConflict(left.statement, right.statement) ||
-      (
-        sameOutcomeQuestion(left.statement, right.statement) &&
-        (
+    conflict.positions.slice(index + 1).some((right) => {
+      const leftFacts = groundedFactsForPosition(left, citations, facts);
+      const rightFacts = groundedFactsForPosition(right, citations, facts);
+      if (leftFacts.length === 0 || rightFacts.length === 0) return false;
+      return leftFacts.some((leftFact) => rightFacts.some((rightFact) => {
+        const recommendationState = groundedRecommendationConflictState(leftFact, rightFact, facts);
+        if (recommendationState === "current") return true;
+        if (
+          recommendationState === "historical-resolved" &&
+          questionRequestsHistoricalDisagreement(question) &&
+          /\b(?:earlier|historical|later records?|converged|resolved|no longer)\b/i.test(
+            `${conflict.statement} ${conflict.explanation}`,
+          )
+        ) return true;
+        if (compareClinicalSourceOrder(leftFact, rightFact) !== 0) return false;
+        return sameOutcomeQuestion(leftFact.text, rightFact.text) &&
           (
-            evidencePolarity(left.statement) !== null &&
-            evidencePolarity(right.statement) !== null &&
-            evidencePolarity(left.statement) !== evidencePolarity(right.statement)
-          ) ||
-          numericOutcomeDiffers(left.statement, right.statement)
-        )
-      )
-    )
+            (
+              evidencePolarity(leftFact.text) !== null &&
+              evidencePolarity(rightFact.text) !== null &&
+              evidencePolarity(leftFact.text) !== evidencePolarity(rightFact.text)
+            ) ||
+            numericOutcomeDiffers(leftFact.text, rightFact.text)
+          );
+      }));
+    })
   );
   const explicitDocumentationDiscrepancy = conflict.type === "Documentation discrepancy" &&
     /\b(?:whereas|differs?|reported differently|documentation discrepancy)\b/i.test(conflict.statement);
@@ -1037,6 +1087,23 @@ function isReviewableConflict(conflict: InvestigationConflict) {
     (positionSources.size >= 2 || distinctCitations.size >= 2) &&
     distinctCitations.size >= 2 &&
     (hasGenuinePair || explicitDocumentationDiscrepancy);
+}
+
+function groundedFactsForPosition(
+  position: InvestigationConflictPosition,
+  citations: Citation[],
+  facts: GroundedFact[],
+) {
+  const positionCitations = citations.filter((citation) =>
+    position.citationIds.includes(citation.id) ||
+    citation.documentName === position.documentName ||
+    position.documentName.startsWith(citation.documentName)
+  );
+  const evidenceIds = new Set(positionCitations.flatMap((citation) => [
+    citation.evidenceId,
+    citation.chunkId,
+  ]));
+  return facts.filter((fact) => evidenceIds.has(fact.evidenceId));
 }
 
 function citationSupportsPosition(citation: Citation, statement: string) {
@@ -1138,7 +1205,13 @@ function strongestCrossDocumentCitationIds(
   return selected;
 }
 
-function normalizeDirectAnswer(answer: string, facts: GroundedFact[], question: string) {
+function normalizeDirectAnswer(
+  answer: string,
+  facts: GroundedFact[],
+  question: string,
+  conflicts: InvestigationConflict[],
+  acceptedConclusions: string[],
+) {
   const value = polishPrimaryAnswerFluency(answer);
   const malformed = /^(?:on\s+\w+|factors?\s+(?:arguing|for|against)|findings?|summary|primary answer)\s*[:,]/i.test(value);
   const sourceText = facts.map((fact) => `${fact.text} ${fact.excerpt}`).join(" ").toLowerCase();
@@ -1158,13 +1231,13 @@ function normalizeDirectAnswer(answer: string, facts: GroundedFact[], question: 
     !unsupportedCertainty &&
     !unsupportedEfficacyClaim &&
     !prematurelyIncomplete &&
-    directAnswerCoversQuestion(value, question, facts) &&
+    directAnswerCoversQuestion(value, question, facts, conflicts.length, acceptedConclusions) &&
     value.length >= 40 &&
     /[.!?]$/.test(value)
   ) {
-    return value;
+    return reconcileAnswerWithAcceptedConflicts(value, conflicts);
   }
-  if (hasSupportedSynthesis) return groundedSynthesis;
+  if (hasSupportedSynthesis) return reconcileAnswerWithAcceptedConflicts(groundedSynthesis, conflicts);
   const fallback = facts
     .map((fact) => polishFindingStatement(fact.text, fact.excerpt))
     .find((statement) => isReviewableFindingStatement(statement));
@@ -1173,9 +1246,36 @@ function normalizeDirectAnswer(answer: string, facts: GroundedFact[], question: 
     : "The uploaded documents do not contain enough complete, directly extractable evidence to answer the research question reliably.");
 }
 
-function directAnswerCoversQuestion(answer: string, question: string, facts: GroundedFact[]) {
+function directAnswerCoversQuestion(
+  answer: string,
+  question: string,
+  facts: GroundedFact[],
+  acceptedDisagreementCount = 0,
+  acceptedConclusions: string[] = [],
+) {
   return primaryAnswerCoverageIssues(answer, question, facts).length === 0 &&
-    primaryAnswerConsistencyIssues(answer, question, facts).length === 0;
+    primaryAnswerConsistencyIssues(
+      answer,
+      question,
+      facts,
+      acceptedDisagreementCount,
+      acceptedConclusions,
+    ).length === 0;
+}
+
+function reconcileAnswerWithAcceptedConflicts(
+  answer: string,
+  conflicts: InvestigationConflict[],
+) {
+  if (conflicts.length === 0 || !primaryAnswerDeniesDisagreement(answer)) return answer;
+  const retained = answer.match(/[^.!?]+[.!?]+|[^.!?]+$/g)
+    ?.map((sentence) => sentence.trim())
+    .filter((sentence) => sentence && !primaryAnswerDeniesDisagreement(sentence)) ?? [];
+  const conflict = conflicts[0].statement.trim();
+  return polishPrimaryAnswerFluency([
+    ...retained,
+    /[.!?]$/.test(conflict) ? conflict : `${conflict}.`,
+  ].join(" "));
 }
 
 function primaryUncertainty(session: ResearchSession, facts: GroundedFact[]) {
@@ -1440,7 +1540,7 @@ function createOpenQuestions({
     if (
       openQuestionQualityIssues(question).length > 0 ||
       isGenericOpenQuestion(question) ||
-      isOpenQuestionAnswered(question, facts)
+      isOpenQuestionAnswered(question, facts, session.evidence)
     ) return [];
     const id = `question:${family}`;
     const explicitlyLinkedFacts = facts.filter((fact) =>

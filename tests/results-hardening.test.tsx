@@ -77,4 +77,25 @@ describe("results flow hardening", () => {
     expect(screen.getByText("Ranking passages against the research question")).toBeInTheDocument();
     expect(screen.getByText(/elapsed/i)).toBeInTheDocument();
   });
+
+  it("starts elapsed analysis time from the current pipeline run", () => {
+    const now = new Date();
+    const session = makeDemoSession();
+    session.status = "processing";
+    session.pipeline = session.pipeline.map((stage) => ({
+      ...stage,
+      status: stage.id === "chunking" ? "running" : stage.status,
+      startedAt: stage.id === "uploading"
+        ? new Date(now.getTime() - 120_000).toISOString()
+        : stage.id === "chunking"
+          ? now.toISOString()
+          : stage.startedAt,
+    }));
+    workspace.sessions = [session];
+
+    render(<ResultsClient sessionId={session.id} />);
+
+    expect(screen.getByText("0s elapsed")).toBeInTheDocument();
+    expect(screen.queryByText(/2m .* elapsed/)).not.toBeInTheDocument();
+  });
 });

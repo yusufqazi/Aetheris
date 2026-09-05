@@ -9,8 +9,9 @@ import { assessEvidenceConfidence } from "@/lib/research/confidence";
 import { createClinicalFindingTitle } from "@/lib/research/finding-titles";
 import {
   classifyStatementRole,
+  groundedRecommendationConflictState,
   isNeutralPositionStatement,
-  recommendationsMateriallyConflict,
+  questionRequestsHistoricalDisagreement,
 } from "@/lib/research/conflict-semantics";
 import { claimEvidenceAlignmentIssues } from "@/lib/research/semantic-quality";
 import {
@@ -19,8 +20,10 @@ import {
 } from "@/lib/research/finding-wording";
 import {
   evidenceNeededForOpenQuestion,
+  isOpenQuestionAnswered,
   openQuestionsFromMissingEvidence,
   openQuestionImpact,
+  reconcileTemporalEvidence,
 } from "@/lib/research/open-questions";
 import type {
   DebateConsensusOutput,
@@ -59,6 +62,7 @@ export function buildStructuredResearchClaims({
   facts: GroundedFact[];
   evidence: EvidenceItem[];
 }): StructuredResearchClaim[] {
+  facts = reconcileTemporalEvidence(facts, evidence);
   const validEvidenceIds = new Set(evidence.map((item) => item.id));
   const eligible = facts.filter((fact) =>
     validEvidenceIds.has(fact.evidenceId) &&
@@ -115,6 +119,7 @@ export function buildFallbackResearchIntelligence({
   followUpQuestions: string[];
   consensus?: Pick<DebateConsensusOutput, "disagreements" | "missingEvidence">;
 }): ResearchIntelligence {
+  facts = reconcileTemporalEvidence(facts, evidence);
   const structuredClaims = buildStructuredResearchClaims({ question, facts, evidence });
   const requested = requestedAnswerDimensions(question);
   const covered = new Set(structuredClaims.map((claim) => claim.dimension));
@@ -127,7 +132,7 @@ export function buildFallbackResearchIntelligence({
   const unresolvedQuestions = deduplicateDecisionQuestions([
     ...(consensus?.missingEvidence ?? []).flatMap(openQuestionsFromMissingEvidence),
     ...followUpQuestions,
-  ]).slice(0, 6);
+  ]).filter((openQuestion) => !isOpenQuestionAnswered(openQuestion, facts, evidence)).slice(0, 6);
 
   return {
     answerStatus,
@@ -154,6 +159,7 @@ export function buildFallbackResearchIntelligence({
       facts,
       evidence,
       consensus?.disagreements ?? [],
+      question,
     ),
     decisionChangingUnknowns: unresolvedQuestions.map((unknown, index) => {
       const evidenceIds = evidenceIdsForQuestion(unknown, facts);
@@ -176,6 +182,7 @@ export function buildFallbackContradictions(
   facts: GroundedFact[],
   evidence: EvidenceItem[],
   acceptedDisagreements: string[] = [],
+  question = "",
 ): ResearchContradiction[] {
   const validEvidenceIds = new Set(evidence.flatMap((item) => [item.id, item.chunkId]));
   const candidates = facts.filter((fact) =>
@@ -188,18 +195,22 @@ export function buildFallbackContradictions(
     ),
   );
   const contradictions: ResearchContradiction[] = [];
+  const includeHistorical = questionRequestsHistoricalDisagreement(question);
 
   for (const disagreement of acceptedDisagreements) {
     const positions = consensusPositionFacts(disagreement, candidates);
-    if (
-      positions.length < 2 ||
-      !recommendationsMateriallyConflict(positions[0].text, positions[1].text)
-    ) continue;
+    if (positions.length < 2) continue;
+    const state = groundedRecommendationConflictState(positions[0], positions[1], facts);
+    if (state === "invalid" || (state === "historical-resolved" && !includeHistorical)) continue;
     contradictions.push({
       issue: disagreement,
       sourcePositions: positions.map((fact) => fact.text),
-      reconciliation: "The source-specific thresholds must remain separately attributed until the decision criteria are resolved.",
-      impact: "The disagreement changes the decision threshold and should remain visible in the final briefing.",
+      reconciliation: state === "historical-resolved"
+        ? "Later records show that the source positions converged; this remains a historical disagreement rather than a current unresolved conflict."
+        : "The source-specific thresholds must remain separately attributed until the decision criteria are resolved.",
+      impact: state === "historical-resolved"
+        ? "The earlier disagreement remains relevant to questions about how the decision evolved over time."
+        : "The disagreement changes the decision threshold and should remain visible in the final briefing.",
       evidenceIds: positions.map((fact) => fact.evidenceId),
     });
   }
@@ -215,7 +226,9 @@ export function buildFallbackContradictions(
       const leftPolarity = localEvidencePolarity(leftText);
       const rightPolarity = localEvidencePolarity(rightText);
 
-      const recommendationConflict = recommendationsMateriallyConflict(leftText, rightText);
+      const recommendationState = groundedRecommendationConflictState(left, right, facts);
+      const recommendationConflict = recommendationState === "current" ||
+        (recommendationState === "historical-resolved" && includeHistorical);
       const outcomeConflict = Boolean(
         left.category === right.category &&
         leftPolarity && rightPolarity && leftPolarity !== rightPolarity,
@@ -223,7 +236,9 @@ export function buildFallbackContradictions(
       if (!recommendationConflict && !outcomeConflict) continue;
 
       const issue = recommendationConflict
-        ? `${left.documentName} and ${right.documentName} recommend materially different actions for the same decision.`
+        ? recommendationState === "historical-resolved"
+          ? `Earlier records from ${left.documentName} and ${right.documentName} document materially different recommendations for the same decision.`
+          : `${left.documentName} and ${right.documentName} recommend materially different actions for the same decision.`
         : `${left.documentName} and ${right.documentName} report different outcome directions for the same subject.`;
       const evidenceIds = [left.evidenceId, right.evidenceId];
       if (contradictions.some((item) =>
@@ -234,9 +249,13 @@ export function buildFallbackContradictions(
       contradictions.push({
         issue,
         sourcePositions: [left.text, right.text],
-        reconciliation: "The source context, timing, and decision threshold must be compared before either position is treated as controlling.",
+        reconciliation: recommendationState === "historical-resolved"
+          ? "Later records show that the source positions converged; this remains a historical disagreement rather than a current unresolved conflict."
+          : "The source context, timing, and decision threshold must be compared before either position is treated as controlling.",
         impact: recommendationConflict
-          ? "The disagreement changes the next action and should be resolved before presenting one recommendation as settled."
+          ? recommendationState === "historical-resolved"
+            ? "The earlier disagreement remains relevant to questions about how the decision evolved over time."
+            : "The disagreement changes the next action and should be resolved before presenting one recommendation as settled."
           : "The conclusion depends on which source and context best represent the decision under review.",
         evidenceIds,
       });

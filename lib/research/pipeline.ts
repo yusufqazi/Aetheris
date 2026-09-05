@@ -779,7 +779,7 @@ function recoverDebateFromGroundedEvidence({
       /\b(?:differ|disagree|conflict|contrast|whereas|while)\b/i.test(fact.text)
     )
     .map((fact) => fact.text);
-  const inferredDisagreements = buildFallbackContradictions(facts, evidence)
+  const inferredDisagreements = buildFallbackContradictions(facts, evidence, [], question)
     .map((conflict) => conflict.issue);
   const missingEvidence = facts
     .filter((fact) =>

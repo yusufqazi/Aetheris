@@ -1,4 +1,4 @@
-import type { EvidenceItem, ResearchIntelligence, StructuredResearchClaim } from "@/lib/types";
+import type { EvidenceItem, GroundedFact, ResearchIntelligence, StructuredResearchClaim } from "@/lib/types";
 import {
   isQuestionOnlyQuote,
   semanticTopics,
@@ -7,10 +7,13 @@ import { areOverlappingClinicalConclusions } from "@/lib/research/finding-dedupl
 import { assessEvidenceConfidence } from "@/lib/research/confidence";
 import {
   isGenericOpenQuestion,
+  isOpenQuestionAnswered,
+  openQuestionsFromGap,
   openQuestionQualityIssues,
 } from "@/lib/research/open-questions";
 import {
   classifyStatementRole,
+  groundedRecommendationConflictState,
   numericOutcomeDiffers,
   recommendationsMateriallyConflict,
   sameClinicalQuestion,
@@ -31,14 +34,19 @@ import {
   isGeneratedFindingReviewable,
   polishGeneratedFinding,
 } from "@/lib/research/finding-wording";
-
+import { compareClinicalSourceOrder } from "@/lib/research/chronology";
 export function sanitizeResearchIntelligence(
   intelligence: ResearchIntelligence | undefined,
   evidence: EvidenceItem[],
+  facts: GroundedFact[] = [],
 ) {
   if (!intelligence) return undefined;
   const validEvidenceIds = new Set(evidence.flatMap((item) => [item.id, item.chunkId]));
-  const keepIds = (ids: string[]) => Array.from(new Set(ids.filter((id) => validEvidenceIds.has(id))));
+  const currentEvidenceIds = new Set(facts.map((fact) => fact.evidenceId));
+  const hasCurrentFactScope = facts.length > 0;
+  const keepIds = (ids: string[]) => Array.from(new Set(ids.filter((id) =>
+    validEvidenceIds.has(id) && (!hasCurrentFactScope || currentEvidenceIds.has(id))
+  )));
 
   const evidenceTrajectory = intelligence.evidenceTrajectory
     .map((item) => ({ ...item, evidenceIds: keepIds(item.evidenceIds) }))
@@ -53,7 +61,7 @@ export function sanitizeResearchIntelligence(
     .map((item) => ({ ...item, evidenceIds: keepIds(item.evidenceIds) }))
     .filter((item) => item.evidenceIds.length >= 2 && item.sourcePositions.length >= 2)
     .filter((item) => !isUncertaintyOnlyContradiction(item))
-    .filter(isGenuineContradiction)
+    .filter((item) => isGenuineContradiction(item, facts))
     .slice(0, 5);
   const evidenceMappings = (intelligence.evidenceMappings ?? [])
     .filter((mapping) => {
@@ -93,12 +101,13 @@ export function sanitizeResearchIntelligence(
       isCompleteStatement(claim.conclusion) &&
       isGeneratedFindingReviewable(claim.conclusion) &&
       numbersAreGrounded(`${claim.conclusion} ${claim.reasoningSummary}`, claim.evidenceIds, evidence),
-    ))
+    )
+    .filter((claim) => claimRepresentsCurrentState(claim, facts, evidence))
     .map((claim) => ({
       ...claim,
       confidence: confidenceForStructuredClaim(claim, evidence),
     }))
-    .slice(0, 10);
+    .slice(0, 10));
 
   return {
     ...intelligence,
@@ -116,6 +125,7 @@ export function sanitizeResearchIntelligence(
       .filter((item) =>
         item.unknown.trim().length >= 18 &&
         !isGenericOpenQuestion(item.unknown) &&
+        !isOpenQuestionAnswered(item.unknown, facts, evidence) &&
         openQuestionQualityIssues(item.unknown).length === 0 &&
         completeSupportingText(item.known) &&
         completeSupportingText(item.evidenceNeeded) &&
@@ -201,7 +211,32 @@ function isUncertaintyOnlyContradiction(
 
 function isGenuineContradiction(
   item: ResearchIntelligence["contradictions"][number],
+  facts: GroundedFact[],
 ) {
+  const linkedFacts = facts.filter((fact) => item.evidenceIds.includes(fact.evidenceId));
+  if (facts.length > 0) {
+    if (linkedFacts.length < 2) return false;
+    return linkedFacts.some((left, index) =>
+      linkedFacts.slice(index + 1).some((right) => {
+        if (left.documentId === right.documentId) return false;
+        const recommendationState = groundedRecommendationConflictState(left, right, facts);
+        if (recommendationState === "current") return true;
+        if (
+          recommendationState === "historical-resolved" &&
+          /\b(?:earlier|historical|later records?|converged|resolved|no longer current)\b/i.test(
+            `${item.issue} ${item.reconciliation} ${item.impact}`,
+          )
+        ) return true;
+        if (compareClinicalSourceOrder(left, right) !== 0) return false;
+        return (
+          sameOutcomeQuestion(left.text, right.text) && outcomesConflict(left.text, right.text)
+        ) || (
+          sameClinicalQuestion(left.text, right.text) &&
+          uncertaintyDiffers(left.text, right.text, item.issue)
+        );
+      })
+    );
+  }
   for (let leftIndex = 0; leftIndex < item.sourcePositions.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < item.sourcePositions.length; rightIndex += 1) {
       const left = item.sourcePositions[leftIndex];
@@ -216,6 +251,18 @@ function isGenuineContradiction(
     }
   }
   return false;
+}
+
+function claimRepresentsCurrentState(
+  claim: StructuredResearchClaim,
+  facts: GroundedFact[],
+  evidence: EvidenceItem[],
+) {
+  if (facts.length === 0) return true;
+  if (!facts.some((fact) => claim.evidenceIds.includes(fact.evidenceId))) return false;
+  const unresolvedQuestions = openQuestionsFromGap(claim.conclusion);
+  return unresolvedQuestions.length === 0 ||
+    !unresolvedQuestions.some((question) => isOpenQuestionAnswered(question, facts, evidence));
 }
 
 function outcomesConflict(left: string, right: string) {

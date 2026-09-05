@@ -1,4 +1,4 @@
-import type { GroundedFact } from "@/lib/types";
+import type { EvidenceItem, GroundedFact } from "@/lib/types";
 import {
   classifyStatementRole,
   isNeutralPositionStatement,
@@ -8,6 +8,7 @@ import {
   proseQualityIssues,
 } from "@/lib/research/semantic-quality";
 import { isSourceNoise } from "@/lib/research/source-cleaning";
+import { compareClinicalSourceOrder } from "@/lib/research/chronology";
 
 const GENERIC_QUESTION = /(?:what|which) (?:additional|other|more) (?:source|evidence|information)|what evidence would|decision-changing evidence|reduce uncertainty|strengthen the conclusion|materially change the conclusion|more evidence (?:is|would be) needed/i;
 
@@ -17,41 +18,92 @@ export function isGenericOpenQuestion(value: string) {
 
 export function isClinicallyImportantUncertainty(value: string) {
   const text = value.replace(/\s+/g, " ").trim();
-  const uncertainty = /\b(?:await(?:ed|ing)?|cannot exclude|could not exclude|does not yet contain|not (?:yet )?(?:been )?(?:available|confirmed|excluded|established|performed|completed|obtained|quantified|reported|resolved|ruled out)|pending|possible|requires? confirmation|remain(?:s|ed)? (?:relevant|required|needed|uncertain|unclear|unknown|unresolved)|suspected|uncertain|unclear|unknown|unresolved)\b/i.test(text);
+  const uncertainty = /\b(?:await(?:ed|ing)?|cannot exclude|could not exclude|does not yet contain|not (?:yet )?(?:been )?(?:available|confirmed|excluded|established|performed|completed|obtained|quantified|reported|resolved|ruled out)|pending|possible|requires? confirmation|remain(?:s|ed)? (?:relevant|required|needed|uncertain|unclear|unknown|unresolved)|suspected|uncertain|unclear|unknown|unresolved)\b/i.test(text) ||
+    /\b(?:chart|record|documents?|evidence)\b.{0,40}\b(?:still\s+)?(?:needs?|requires?)\b/i.test(text);
   const clinicalSubject = /\b(?:adverse|biomarker|biopsy|bleed|bronchoscop|bronchoalveolar|BAL|culture|diagnos|discharge|disease|dose|dosing|efficacy|imaging|infection|interaction|laborator|management|medication|monitor|obstruction|organ|orthostat|oxygen|patholog|procedure|progress|pulmonary|recommendation|renal|respiratory|response|risk|safety|source[- ]control|surgery|test|therapy|toxicity|treatment|trend|trajectory|weight|workup)\w*\b/i.test(text);
   const conditionalDecision = /\b(?:defer|delay|hold|withhold|avoid|proceed|start|begin|continue|recommend)\w*\b.{0,140}\b(?:after|if|pending|unless|until)\b/i.test(text);
   return (uncertainty && clinicalSubject) || conditionalDecision;
 }
 
-export function isOpenQuestionAnswered(question: string, facts: GroundedFact[]) {
+export function isOpenQuestionAnswered(
+  question: string,
+  facts: GroundedFact[],
+  evidence: EvidenceItem[] = [],
+) {
   const questionTerms = subjectTerms(question);
   if (questionTerms.length === 0) return false;
-  const asksForTrend = /\b(?:change|trend|trajectory|serial|repeat|over time|progress|worsen|improv)\w*\b/i.test(question);
+  const asksForTrend = /\b(?:change|trend|trajectory|serial|over time|progression)\w*\b/i.test(question) ||
+    /^(?:how|does|did)\b.{0,120}\b(?:worsen|improv|change)\w*\b/i.test(question);
   const asksForFutureOutcome = /^(?:will|would)\b|\b(?:durability|sustained|long-term|longer follow-up)\b/i.test(question);
 
   // A current observation can describe the trajectory so far without resolving
   // whether that outcome will persist or normalize in the future.
   if (asksForFutureOutcome) return false;
 
-  const candidates = facts.filter((fact) =>
+  const candidates = [...facts, ...resolutionFactsFromEvidence(evidence)].filter((fact) =>
     !["discrepancy", "evidence_excerpt", "limitation", "unresolved_question"].includes(fact.contentType) &&
-    !isClinicallyImportantUncertainty(fact.text),
+    !isClinicallyImportantUncertainty(fact.text) &&
+    hasResolvedEvidenceState(fact.text),
+  );
+  const relatedUnresolved = facts.filter((fact) =>
+    ["discrepancy", "limitation", "unresolved_question"].includes(fact.contentType) &&
+    sharesQuestionSubject(questionTerms, subjectTerms(fact.text)),
+  );
+  const isCurrentAnswer = (fact: GroundedFact) => !relatedUnresolved.some((unresolved) =>
+    compareClinicalSourceOrder(unresolved, fact) > 0
   );
   if (asksForTrend) {
     return candidates.some((fact) =>
       fact.contentType === "longitudinal_change" &&
-      sharesQuestionSubject(questionTerms, subjectTerms(`${fact.text} ${fact.excerpt}`)),
+      sharesQuestionSubject(questionTerms, subjectTerms(fact.text)) &&
+      isCurrentAnswer(fact),
     );
   }
 
-  return candidates.some((fact) => {
-    const text = `${fact.text} ${fact.excerpt}`;
+  const currentCandidates = candidates.filter(isCurrentAnswer);
+  const directlyAnswered = currentCandidates.some((fact) => {
+    const text = fact.text;
     if (!sharesQuestionSubject(questionTerms, subjectTerms(text))) return false;
     const asksForManagement = /\b(?:begin|continue|decision|defer|delay|hold|manage|proceed|recommend|should|start|stop|treat)\w*\b/i.test(question);
     if (fact.contentType === "recommendation") {
       return asksForManagement && !isClinicallyImportantUncertainty(text);
     }
-    return /\b(?:confirmed|demonstrated|diagnosed|excluded|grew|identified|measured|negative|normal|positive|reported|resolved|ruled out|showed|was|were)\b/i.test(text);
+    return true;
+  });
+  if (directlyAnswered) return true;
+
+  // Runtime extraction can split one fulfilled compound gap across several facts
+  // from the same later record. Evaluate their combined semantic coverage rather
+  // than requiring one generated fact to repeat the entire earlier sentence.
+  const relatedCandidates = currentCandidates.filter((fact) =>
+    sharedSubjectCount(questionTerms, subjectTerms(fact.text)) > 0
+  );
+  const aggregateTerms = Array.from(new Set(
+    relatedCandidates.flatMap((fact) => subjectTerms(fact.text)),
+  ));
+  const shared = sharedSubjectCount(questionTerms, aggregateTerms);
+  return shared >= Math.min(2, questionTerms.length) &&
+    shared / Math.max(1, questionTerms.length) >= 0.4;
+}
+
+export function reconcileTemporalEvidence(
+  facts: GroundedFact[],
+  evidence: EvidenceItem[] = [],
+) {
+  return facts.flatMap((fact) => {
+    if (!["discrepancy", "limitation", "unresolved_question"].includes(fact.contentType)) {
+      return [fact];
+    }
+    const questions = openQuestionsFromGap(fact.text);
+    if (questions.length === 0) return [fact];
+    const unanswered = questions.filter((question) => !isOpenQuestionAnswered(question, facts, evidence));
+    if (unanswered.length === questions.length) return [fact];
+    return unanswered.map((question, index) => ({
+      ...fact,
+      id: `${fact.id}:current:${index}`,
+      contentType: "unresolved_question" as const,
+      text: question,
+    }));
   });
 }
 
@@ -80,8 +132,10 @@ export function openQuestionsFromMissingEvidence(value: string) {
     .replace(/[.]+$/, "")
     .trim();
   if (!subject) return [];
-  const question = questionForPendingSubject(subject);
-  return openQuestionQualityIssues(question).length === 0 ? [question] : [];
+  return splitEvidenceList(subject)
+    .map(questionForPendingSubject)
+    .filter((question) => openQuestionQualityIssues(question).length === 0)
+    .slice(0, 6);
 }
 
 function openQuestionFromSingleGap(value: string) {
@@ -108,6 +162,8 @@ function openQuestionFromSingleGap(value: string) {
     const question = ensureQuestion(text);
     return openQuestionQualityIssues(question).length === 0 ? question : "";
   }
+  const undocumented = text.match(/^(?:there (?:is|are) )?no (?:documented|confirmed|available) (.+)$/i);
+  if (undocumented) return questionForPendingSubject(undocumented[1]);
   const conditionalDecision = text.match(/^(.{8,160}?)\s+(?:until|pending|after)\s+(.{4,120}?)(?:,\s*(?:unless|if)\s+(.{3,100}))?$/i);
   if (conditionalDecision) {
     const condition = cleanSubject(conditionalDecision[2]);
@@ -208,6 +264,7 @@ function unresolvedEvidenceList(text: string) {
 function splitEvidenceList(value: string) {
   return value
     .replace(/\s+(?:before|for)\s+(?:the\s+)?(?:decision|discharge|management).*/i, "")
+    .replace(/[;\n\r•]+/g, ", ")
     .replace(/,\s+(?:and|or)\s+/gi, ", ")
     .split(/\s*,\s*/)
     .map((item) => item.replace(/^(?:a|an|the)\s+/i, "").trim())
@@ -442,12 +499,12 @@ function lowercaseLeading(value: string) {
 
 function subjectTerms(value: string) {
   const stop = new Set([
-    "about", "answer", "available", "change", "confirmed", "current", "direct", "documented",
-    "does", "evidence", "excluded", "final", "finding", "findings", "pending", "question",
-    "record", "repeat", "result", "results", "show", "shows", "still", "uploaded", "what",
+    "about", "after", "answer", "available", "change", "clinical", "confirm", "current", "direct",
+    "document", "does", "evidence", "exclude", "final", "finding", "missing", "pending", "question",
+    "record", "repeat", "result", "show", "still", "upload", "what",
   ]);
   return Array.from(new Set(
-    value.toLowerCase().match(/[a-z][a-z0-9-]{3,}/g)
+    value.toLowerCase().replace(/[-/]/g, " ").match(/[a-z][a-z0-9]{3,}/g)
       ?.map(canonicalClinicalTerm)
       .filter((term) => !stop.has(term)) ?? [],
   ));
@@ -455,16 +512,52 @@ function subjectTerms(value: string) {
 
 function canonicalClinicalTerm(term: string) {
   if (/^(?:kidney|renal|creatinine|egfr)$/.test(term)) return "renal-function";
+  if (/^(?:oxygen|spo2|saturation|oxygenation)$/.test(term)) return "oxygen-saturation";
   if (/^cultures?$/.test(term)) return "culture";
   if (/^(?:pathology|histology|biopsy)$/.test(term)) return "tissue-result";
+  if (/^(?:diuretic|diuretics|furosemide|lasix)$/.test(term)) return "diuretic";
   if (/^(?:medication|drug|therapy|treatment)$/.test(term)) return "treatment";
-  return term.replace(/(?:ed|ing|s)$/, "");
+  return term
+    .replace(/(?:atories|atory|ations|ation|itions|ition|ions|ion|ments|ment|ness|ities|ity)$/, "")
+    .replace(/(?:ied|ed|ing|es|s)$/, "");
 }
 
 function sharesQuestionSubject(questionTerms: string[], factTerms: string[]) {
+  return sharedSubjectCount(questionTerms, factTerms) >= Math.min(2, questionTerms.length);
+}
+
+function sharedSubjectCount(questionTerms: string[], factTerms: string[]) {
   const factSet = new Set(factTerms);
-  const shared = questionTerms.filter((term) => factSet.has(term));
-  return shared.length >= Math.min(2, questionTerms.length);
+  return questionTerms.filter((term) => factSet.has(term)).length;
+}
+
+function hasResolvedEvidenceState(text: string) {
+  return /\b(?:completed|confirmed|demonstrated|diagnosed|documented|excluded|grew|identified|measured|negative|normal|positive|provided|reported|resolved|ruled out|scheduled|showed|tolerated|was|were|improved|remained|returned|stabilized)\b/i.test(text) ||
+    /\b\d+(?:\.\d+)?\s*(?:%|mg(?:\/dL)?|g(?:\/dL)?|mL|L|mmHg|mmol\/L|bpm)\b/i.test(text);
+}
+
+function resolutionFactsFromEvidence(evidence: EvidenceItem[]): GroundedFact[] {
+  return evidence.flatMap((item, evidenceIndex) => {
+    const statements = item.excerpt
+      .replace(/\s+/g, " ")
+      .trim()
+      .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
+      .map((statement) => statement.trim())
+      .filter((statement) => statement.length >= 12 && statement.length <= 560);
+    return statements.map((statement, statementIndex) => ({
+      id: `evidence-resolution:${evidenceIndex}:${statementIndex}`,
+      category: "context" as const,
+      contentType: "finding" as const,
+      text: statement,
+      evidenceId: item.id,
+      documentId: item.documentId,
+      documentName: item.documentName,
+      sourceSection: item.section ?? undefined,
+      page: item.page,
+      excerpt: statement,
+      relevance: item.relevance,
+    }));
+  });
 }
 
 const GENERIC_SUBJECT_TERMS = new Set([

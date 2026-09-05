@@ -13,6 +13,11 @@ export interface LlmConfiguration {
   embeddingModel: string | null;
 }
 
+export interface OpenAiRequestPolicy {
+  timeoutMs: number;
+  maxRetries: number;
+}
+
 export function getLlmConfiguration(): LlmConfiguration {
   const preferredProvider = process.env.AI_PROVIDER?.trim().toLowerCase();
   const hasGoogle = Boolean(process.env.GEMINI_API_KEY);
@@ -54,6 +59,7 @@ export async function runStructuredGeneration<T>({
   onFallback,
   shouldUseProvider,
   maxAttempts,
+  openAiRequestPolicy,
 }: {
   system: string;
   user: string;
@@ -64,6 +70,7 @@ export async function runStructuredGeneration<T>({
   onFallback?: (reason: string) => void;
   shouldUseProvider?: () => boolean;
   maxAttempts?: number;
+  openAiRequestPolicy?: OpenAiRequestPolicy;
 }) {
   const configuration = getLlmConfiguration();
   if (!configuration.enabled || !configuration.provider || !configuration.model) {
@@ -118,6 +125,7 @@ export async function runStructuredGeneration<T>({
             schema,
             schemaName,
             model: configuration.model as string,
+            requestPolicy: openAiRequestPolicy,
           });
       const result = schema.safeParse(parsed);
       if (!result.success) {
@@ -262,14 +270,24 @@ async function generateWithOpenAi<T>({
   schema,
   schemaName,
   model,
+  requestPolicy,
 }: {
   system: string;
   user: string;
   schema: ZodType<T>;
   schemaName: string;
   model: string;
+  requestPolicy?: OpenAiRequestPolicy;
 }) {
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const client = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    ...(requestPolicy
+      ? {
+          timeout: requestPolicy.timeoutMs,
+          maxRetries: requestPolicy.maxRetries,
+        }
+      : {}),
+  });
   const response = await client.chat.completions.parse({
     model,
     response_format: zodResponseFormat(schema, schemaName),
